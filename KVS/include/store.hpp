@@ -1,8 +1,11 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <map>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "value.hpp"
@@ -11,20 +14,22 @@ template <class V>
 class BasicStore {
 public:
     void set(std::string key, V value) {
-        typename Map::iterator it = data_.find(key);
-        if (it != data_.end()) {
-            it->second = std::move(value);
-        } else {
-            data_.insert(std::make_pair(std::move(key), std::move(value)));
-        }
+        data_.insert_or_assign(std::move(key), std::move(value));
     }
 
-    const V* get(const std::string& key) const noexcept {
+    [[nodiscard]] std::optional<V> get(std::string_view key) const {
         typename Map::const_iterator it = data_.find(key);
-        return it == data_.end() ? nullptr : &it->second;
+        if (it == data_.end()) {
+            return std::nullopt;
+        }
+        return it->second;
     }
 
-    bool del(const std::string& key) {
+    [[nodiscard]] bool contains(std::string_view key) const noexcept {
+        return data_.find(key) != data_.end();
+    }
+
+    bool del(std::string_view key) {
         typename Map::iterator it = data_.find(key);
         if (it == data_.end()) {
             return false;
@@ -33,18 +38,18 @@ public:
         return true;
     }
 
-    std::size_t size() const noexcept { return data_.size(); }
-    bool empty() const noexcept { return data_.empty(); }
+    [[nodiscard]] std::size_t size() const noexcept { return data_.size(); }
+    [[nodiscard]] bool empty() const noexcept { return data_.empty(); }
 
     template <class F>
     void for_each(F fn) const {
-        for (const auto& entry : data_) {
-            fn(entry.first, entry.second);
+        for (const auto& [key, value] : data_) {
+            fn(key, value);
         }
     }
 
 private:
-    using Map = std::map<std::string, V>;
+    using Map = std::map<std::string, V, std::less<>>;
     Map data_;
 };
 

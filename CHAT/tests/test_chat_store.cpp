@@ -12,16 +12,19 @@ TEST(ChatStore, PostThenReadHistory) {
     store.post("#general", Message("alice", "hello"));
     store.post("#general", Message("bob", "hi"));
 
-    const ChatStore::History* history = store.history("#general");
-    ASSERT_NE(history, nullptr);
-    ASSERT_EQ(history->size(), 2u);
-    EXPECT_EQ((*history)[0].author(), std::string("alice"));
-    EXPECT_EQ((*history)[1].text(), std::string("hi"));
+    if (const auto history = store.history("#general"); history) {
+        const auto& messages = history->get();
+        ASSERT_EQ(messages.size(), 2u);
+        EXPECT_EQ(messages[0].author(), std::string("alice"));
+        EXPECT_EQ(messages[1].to_string(), std::string("hi"));
+    } else {
+        EXPECT_TRUE(false);
+    }
 }
 
 TEST(ChatStore, MissingRoomReadsAsNullptrAndCreatesNothing) {
     ChatStore store;
-    EXPECT_EQ(store.history("#absent"), nullptr);
+    EXPECT_FALSE(store.history("#absent").has_value());
 
     EXPECT_EQ(store.room_count(), 0u);
     EXPECT_TRUE(store.empty());
@@ -39,7 +42,7 @@ TEST(ChatStore, DropRoomRemovesHistory) {
     store.post("#general", Message("alice", "hello"));
 
     EXPECT_TRUE(store.drop_room("#general"));
-    EXPECT_EQ(store.history("#general"), nullptr);
+    EXPECT_FALSE(store.history("#general").has_value());
     EXPECT_FALSE(store.drop_room("#general"));
 }
 
@@ -80,7 +83,7 @@ TEST(ChatStore, ForEachRoomVisitsRoomsInNameOrder) {
     store.post("#c", Message("u", "3"));
 
     std::vector<std::string> seen;
-    store.for_each_room([&seen](const std::string& room, const ChatStore::History&) {
+    store.for_each_room([&seen](const std::string& room, const History&) {
         seen.push_back(room);
     });
 
@@ -97,12 +100,12 @@ TEST(ChatStore, CaptureByReferenceAccumulatesButByValueDoesNot) {
     store.post("#b", Message("u", "3"));
 
     int by_reference = 0;
-    store.for_each_room([&by_reference](const std::string&, const ChatStore::History& h) {
+    store.for_each_room([&by_reference](const std::string&, const History& h) {
         by_reference += static_cast<int>(h.size());
     });
 
     int by_value = 0;
-    store.for_each_room([by_value](const std::string&, const ChatStore::History& h) mutable {
+    store.for_each_room([by_value](const std::string&, const History& h) mutable {
         by_value += static_cast<int>(h.size());
     });
 

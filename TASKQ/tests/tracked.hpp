@@ -37,7 +37,7 @@ public:
 
     ~Tracked() = default;
 
-    const std::string& str() const noexcept { return data_; }
+    [[nodiscard]] const std::string& str() const noexcept { return data_; }
 
     static void reset() noexcept { copy_counter() = 0; move_counter() = 0; }
     static int copies() noexcept { return copy_counter(); }

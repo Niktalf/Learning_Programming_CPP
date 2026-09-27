@@ -7,7 +7,7 @@
 OwningBuffer::OwningBuffer(const std::string& text)
     : OwningBuffer(text.data(), text.size()) {}
 
-OwningBuffer::OwningBuffer(const char* data, std::size_t size)
+OwningBuffer::OwningBuffer(const char* data, const std::size_t size)
     : data_(size == 0 ? nullptr : new char[size]), size_(size) {
     if (size_ != 0) {
         std::copy_n(data, size_, data_);
@@ -33,5 +33,5 @@ void swap(OwningBuffer& a, OwningBuffer& b) noexcept {
     std::swap(a.size_, b.size_);
 }
 
-static_assert(std::is_nothrow_move_constructible<OwningBuffer>::value, "the move should be noexcept, otherwise the vector will copy");
-static_assert(std::is_nothrow_move_assignable<OwningBuffer>::value, "the move assignment operator must be noexcept");
+static_assert(std::is_nothrow_move_constructible_v<OwningBuffer>, "the move should be noexcept, otherwise the vector will copy");
+static_assert(std::is_nothrow_move_assignable_v<OwningBuffer>, "the move assignment operator must be noexcept");

@@ -6,6 +6,7 @@
 
 #include "owning_buffer.hpp"
 
+
 TEST(OwningBuffer, CopyIsIndependent) {
     OwningBuffer original{std::string("payload")};
     OwningBuffer copy{original};
@@ -47,8 +48,8 @@ TEST(OwningBuffer, AssignmentReplacesContent) {
 }
 
 TEST(OwningBuffer, MoveOperationsAreNoexcept) {
-    EXPECT_TRUE(std::is_nothrow_move_constructible<OwningBuffer>::value);
-    EXPECT_TRUE(std::is_nothrow_move_assignable<OwningBuffer>::value);
+    EXPECT_TRUE(std::is_nothrow_move_constructible_v<OwningBuffer>);
+    EXPECT_TRUE(std::is_nothrow_move_assignable_v<OwningBuffer>);
 }
 
 TEST(OwningBuffer, EmptyBufferIsValid) {

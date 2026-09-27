@@ -1,13 +1,15 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <map>
+#include <optional>
+#include <string_view>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "message.hpp"
-
 
 template <class M>
 class BasicChatStore {
@@ -15,26 +17,34 @@ public:
     using History = std::vector<M>;
 
     bool create_room(std::string room) {
-        if (rooms_.find(room) != rooms_.end()) {
-            return false;
-        }
-        rooms_.insert(std::make_pair(std::move(room), History{}));
-        return true;
+        return rooms_.try_emplace(std::move(room)).second;
     }
     void post(std::string room, M message) {
-        typename Map::iterator it = rooms_.find(room);
-        if (it == rooms_.end()) {
-            it = rooms_.insert(std::make_pair(std::move(room), History{})).first;
-        }
-        it->second.push_back(std::move(message));
+        rooms_[std::move(room)].push_back(std::move(message));
     }
 
-    const History* history(const std::string& room) const noexcept {
+    [[nodiscard]] std::optional<std::reference_wrapper<const History>>
+    history(std::string_view room) const noexcept {
         typename Map::const_iterator it = rooms_.find(room);
-        return it == rooms_.end() ? nullptr : &it->second;
+        if (it == rooms_.end()) {
+            return std::nullopt;
+        }
+        return std::cref(it->second);
     }
 
-    bool drop_room(const std::string& room) {
+    [[nodiscard]] M* message_at(std::string_view room, std::size_t index) noexcept {
+        typename Map::iterator it = rooms_.find(room);
+        if (it == rooms_.end() || index >= it->second.size()) {
+            return nullptr;
+        }
+        return &it->second[index];
+    }
+
+    [[nodiscard]] bool contains(std::string_view room) const noexcept {
+        return rooms_.find(room) != rooms_.end();
+    }
+
+    bool drop_room(std::string_view room) {
         typename Map::iterator it = rooms_.find(room);
         if (it == rooms_.end()) {
             return false;
@@ -43,19 +53,20 @@ public:
         return true;
     }
 
-    std::size_t room_count() const noexcept { return rooms_.size(); }
-    bool empty() const noexcept { return rooms_.empty(); }
+    [[nodiscard]] std::size_t room_count() const noexcept { return rooms_.size(); }
+    [[nodiscard]] bool empty() const noexcept { return rooms_.empty(); }
 
     template <class F>
     void for_each_room(F fn) const {
-        for (const auto& entry : rooms_) {
-            fn(entry.first, entry.second);
+        for (const auto& [room, history] : rooms_) {
+            fn(room, history);
         }
     }
 
 private:
-    using Map = std::map<std::string, History>;
+    using Map = std::map<std::string, History, std::less<>>;
     Map rooms_;
 };
 
 using ChatStore = BasicChatStore<Message>;
+using History = ChatStore::History;

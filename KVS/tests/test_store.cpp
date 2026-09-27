@@ -9,20 +9,22 @@
 
 TEST(Store, SetGetDelete) {
     Store store;
-    store.set("greeting", Value{std::string("hello")});
+    store.set("greeting", Value(std::string("hello")));
 
-    const Value* found = store.get("greeting");
-    ASSERT_NE(found, nullptr);
-    EXPECT_EQ(found->str(), std::string("hello"));
+    if (const auto found = store.get("greeting"); found) {
+        EXPECT_EQ(found->to_string(), std::string("hello"));
+    } else {
+        EXPECT_TRUE(false);
+    }
 
     EXPECT_TRUE(store.del("greeting"));
-    EXPECT_EQ(store.get("greeting"), nullptr);
+    EXPECT_FALSE(store.get("greeting").has_value());
     EXPECT_FALSE(store.del("greeting"));
 }
 
 TEST(Store, MissingKeyDoesNotCreateEntry) {
     Store store;
-    EXPECT_EQ(store.get("absent"), nullptr);
+    EXPECT_FALSE(store.get("absent").has_value());
 
     EXPECT_EQ(store.size(), 0u);
     EXPECT_TRUE(store.empty());
@@ -30,11 +32,11 @@ TEST(Store, MissingKeyDoesNotCreateEntry) {
 
 TEST(Store, SetOverwritesExistingKey) {
     Store store;
-    store.set("k", Value{std::string("first")});
-    store.set("k", Value{std::string("second")});
+    store.set("k", Value(std::string("first")));
+    store.set("k", Value(std::string("second")));
 
-    ASSERT_NE(store.get("k"), nullptr);
-    EXPECT_EQ(store.get("k")->str(), std::string("second"));
+    ASSERT_TRUE(store.get("k").has_value());
+    EXPECT_EQ(store.get("k")->to_string(), std::string("second"));
     EXPECT_EQ(store.size(), 1u);
 }
 

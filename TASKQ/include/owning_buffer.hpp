@@ -16,10 +16,10 @@ public:
 
     ~OwningBuffer();
 
-    const char* data() const noexcept { return data_; }
-    std::size_t size() const noexcept { return size_; }
-    bool empty() const noexcept { return size_ == 0; }
-    std::string str() const { return std::string(data_, size_); }
+    [[nodiscard]] const char* data() const noexcept { return data_; }
+    [[nodiscard]] std::size_t size() const noexcept { return size_; }
+    [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
+    [[nodiscard]] std::string str() const { return std::string(data_, size_); }
 
     friend void swap(OwningBuffer& a, OwningBuffer& b) noexcept;
 
