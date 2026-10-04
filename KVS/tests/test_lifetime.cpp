@@ -7,22 +7,19 @@
 #include "lexer.hpp"
 #include "parser.hpp"
 
+
 namespace {
+    template <class T, class = void>
+    struct tokenize_accepts : std::false_type {};
 
-template <class T, class = void>
-struct tokenize_accepts : std::false_type {};
+    template <class T>
+    struct tokenize_accepts<T, std::void_t<decltype(tokenize(std::declval<T>()))>> : std::true_type {};
 
-template <class T>
-struct tokenize_accepts<T, std::void_t<decltype(tokenize(std::declval<T>()))>>
-    : std::true_type {};
+    template <class T, class = void>
+    struct parse_accepts : std::false_type {};
 
-template <class T, class = void>
-struct parse_accepts : std::false_type {};
-
-template <class T>
-struct parse_accepts<T, std::void_t<decltype(parse(std::declval<T>()))>>
-    : std::true_type {};
-
+    template <class T>
+    struct parse_accepts<T, std::void_t<decltype(parse(std::declval<T>()))>> : std::true_type {};
 }  // namespace
 
 TEST(Lifetime, TokenizeRejectsTemporaryString) {

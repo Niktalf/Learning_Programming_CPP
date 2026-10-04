@@ -10,14 +10,18 @@ add_library(kvs_warnings INTERFACE)
 target_compile_options(kvs_warnings INTERFACE -Wall -Wextra -Wshadow)
 
 include(FetchContent)
-FetchContent_Declare(googletest
+FetchContent_Declare(
+        googletest
         GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG        v1.15.2)
+        GIT_TAG        v1.15.2
+)
 FetchContent_MakeAvailable(googletest)
 
 add_library(
         kvs_core
         src/value.cpp
+        src/errors.cpp
+        src/handler.cpp
         src/lexer.cpp
         src/parser.cpp
         src/executor.cpp
@@ -30,7 +34,8 @@ add_executable(kvs_cli src/main.cpp)
 target_link_libraries(kvs_cli PRIVATE kvs_core kvs_warnings)
 
 enable_testing()
-add_executable(kvs_tests
+add_executable(
+        kvs_tests
         tests/test_value.cpp
         tests/test_owning_buffer.cpp
         tests/test_store.cpp
@@ -38,6 +43,9 @@ add_executable(kvs_tests
         tests/test_parser.cpp
         tests/test_executor.cpp
         tests/test_lifetime.cpp
+        tests/test_errors.cpp
+        tests/test_guarantee.cpp
+        tests/test_handler.cpp
 )
 target_link_libraries(kvs_tests PRIVATE kvs_core kvs_warnings GTest::gtest_main)
 

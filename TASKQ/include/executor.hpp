@@ -14,6 +14,7 @@ class Service {
 public:
     explicit Service(TaskStore& store) noexcept : store_(store) {}
     [[nodiscard]] Response execute(const Command& command);
+    [[nodiscard]] TaskStore& store() const noexcept { return store_; }
 
 private:
     TaskStore& store_;

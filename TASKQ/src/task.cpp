@@ -28,7 +28,7 @@ std::string Task::to_string() const {
         },
         [](const BinaryPayload& p) {
             std::ostringstream out;
-            out << '<' << p.bytes.size() << " bites>";
+            out << '<' << p.bytes.size() << " bytes>";
             return out.str();
         },
     }, payload_);

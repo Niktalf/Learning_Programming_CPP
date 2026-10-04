@@ -42,14 +42,13 @@ public:
     template <class T> [[nodiscard]] T* get_if() noexcept { return std::get_if<T>(&body_); }
     template <class T> [[nodiscard]] bool holds() const noexcept { return std::holds_alternative<T>(body_); }
 
+    bool operator==(const Message& other) const  {
+        return author() == other.author() && body() == other.body() && at() == other.at();
+    }
+    bool operator!=(const Message& other) const { return !(*this == other); }
+
 private:
     std::string author_;
     Body body_;
     Timestamp at_ = Timestamp{};
 };
-
-inline bool operator==(const Message& lhs, const Message& rhs) {
-    return lhs.author() == rhs.author() && lhs.body() == rhs.body() && lhs.at() == rhs.at();
-}
-
-inline bool operator!=(const Message& lhs, const Message& rhs) { return !(lhs == rhs); }

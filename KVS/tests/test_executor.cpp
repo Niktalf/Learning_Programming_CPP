@@ -3,17 +3,14 @@
 #include <string>
 #include <utility>
 
+#include "errors.hpp"
 #include "executor.hpp"
 #include "parser.hpp"
 
 namespace {
     Response run(Store& store, std::string text) {
         const InputLine line{std::move(text)};
-        const auto command = parse(line);
-        if (!command) {
-            return Response{false, "(не разобрано)"};
-        }
-        return execute(store, *command);
+        return execute(store, parse(line));
     }
 }  // namespace
 
@@ -25,9 +22,9 @@ TEST(Executor, SetThenGet) {
     EXPECT_EQ(text, std::string("hello"));
 }
 
-TEST(Executor, GetMissingKeyIsNotOk) {
+TEST(Executor, GetMissingKeyThrows) {
     Store store;
-    EXPECT_FALSE(run(store, "GET absent").ok);
+    EXPECT_THROW(run(store, "GET absent"), KeyNotFoundError);
 }
 
 TEST(Executor, ExistsReportsPresence) {
@@ -51,11 +48,23 @@ TEST(Executor, IncrCreatesAndAccumulates) {
     EXPECT_EQ(run(store, "INCR n 41").text, std::string("42"));
 }
 
-TEST(Executor, IncrOnStringFailsWithoutThrowing) {
+TEST(Executor, IncrOnStringThrowsTypeMismatch) {
     Store store;
     run(store, "SET s text");
-    const auto [ok, text] = run(store, "INCR s");
-    EXPECT_FALSE(ok);
+    try {
+        run(store, "INCR s");
+        EXPECT_TRUE(false);
+    } catch (const TypeMismatchError& e) {
+        EXPECT_EQ(e.key(), std::string("s"));
+        EXPECT_EQ(e.actual(), std::string("string"));
+    }
+}
+
+TEST(Executor, MsetWritesAllPairs) {
+    Store store;
+    run(store, "MSET a 1 b 2 c 3");
+    EXPECT_EQ(store.size(), 3u);
+    EXPECT_EQ(run(store, "GET b").text, std::string("2"));
 }
 
 TEST(Executor, QuotedValueKeepsSpaces) {

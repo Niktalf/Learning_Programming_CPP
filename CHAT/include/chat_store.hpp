@@ -4,11 +4,13 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <set>
 #include <string_view>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "errors.hpp"
 #include "message.hpp"
 
 template <class M>
@@ -44,6 +46,26 @@ public:
         return rooms_.find(room) != rooms_.end();
     }
 
+    void post_many(const std::vector<std::string>& rooms, const M& message) {
+        Map next = rooms_;
+        for (const auto& room : rooms) {
+            const auto it = next.find(room);
+            if (it == next.end()) {
+                throw UnknownRoomError(room);
+            }
+            it->second.push_back(message);
+        }
+        rooms_.swap(next);
+    }
+    void claim_nick(std::string nick) {
+        if (!nicks_.insert(nick).second) {
+            throw NicknameTakenError(std::move(nick));
+        }
+    }
+    friend void swap(BasicChatStore& a, BasicChatStore& b) noexcept {
+        a.rooms_.swap(b.rooms_);
+        a.nicks_.swap(b.nicks_);
+    }
     bool drop_room(std::string_view room) {
         typename Map::iterator it = rooms_.find(room);
         if (it == rooms_.end()) {
@@ -66,6 +88,7 @@ public:
 private:
     using Map = std::map<std::string, History, std::less<>>;
     Map rooms_;
+    std::set<std::string, std::less<>> nicks_;
 };
 
 using ChatStore = BasicChatStore<Message>;

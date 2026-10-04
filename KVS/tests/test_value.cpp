@@ -17,9 +17,9 @@ TEST(Value, RuleOfZeroHoldsAtCompileTime) {
 }
 
 TEST(Value, StoresAndComparesText) {
-    const Value a{std::string("hello")};
-    const Value b{std::string("hello")};
-    const Value c{std::string("world")};
+    const Value a(std::string("hello"));
+    const Value b(std::string("hello"));
+    const Value c(std::string("world"));
 
     EXPECT_EQ(a.to_string(), std::string("hello"));
     EXPECT_EQ(a.size(), 5u);
@@ -45,7 +45,7 @@ TEST(Value, HoldsDifferentAlternatives) {
 }
 
 TEST(Value, MoveLeavesSourceUsable) {
-    Value source{std::string("payload")};
+    Value source(std::string("payload"));
     const Value target{std::move(source)};
 
     EXPECT_EQ(target.to_string(), std::string("payload"));

@@ -5,21 +5,21 @@
 #include <utility>
 
 OwningBuffer::OwningBuffer(const std::string& text)
-    : OwningBuffer(text.data(), text.size()) {}
+    :   OwningBuffer(text.data(), text.size()) {}
 
 OwningBuffer::OwningBuffer(const char* data, const std::size_t size)
-    : data_(size == 0 ? nullptr : new char[size]), size_(size) {
+    :   data_(size == 0 ? nullptr : new char[size]), size_(size) {
     if (size_ != 0) {
         std::copy_n(data, size_, data_);
     }
 }
 
 OwningBuffer::OwningBuffer(const OwningBuffer& other)
-    : OwningBuffer(other.data_, other.size_) {}
+    :   OwningBuffer(other.data_, other.size_) {}
 
 OwningBuffer::OwningBuffer(OwningBuffer&& other) noexcept
-    : data_(std::exchange(other.data_, nullptr)),
-      size_(std::exchange(other.size_, std::size_t{0})) {}
+    :   data_(std::exchange(other.data_, nullptr)),
+        size_(std::exchange(other.size_, std::size_t{0})) {}
 
 OwningBuffer& OwningBuffer::operator=(OwningBuffer other) noexcept {
     swap(*this, other);

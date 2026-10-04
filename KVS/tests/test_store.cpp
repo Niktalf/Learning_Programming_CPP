@@ -72,9 +72,9 @@ TEST(Store, ExplicitMoveDoesNotCopy) {
 
 TEST(Store, ForEachVisitsEveryEntryInKeyOrder) {
     Store store;
-    store.set("b", Value{std::string("2")});
-    store.set("a", Value{std::string("1")});
-    store.set("c", Value{std::string("3")});
+    store.set("b", Value(std::string("2")));
+    store.set("a", Value(std::string("1")));
+    store.set("c", Value(std::string("3")));
 
     std::vector<std::string> seen;
     store.for_each([&seen](const std::string& key, const Value&) {
@@ -89,8 +89,8 @@ TEST(Store, ForEachVisitsEveryEntryInKeyOrder) {
 
 TEST(Store, CaptureByReferenceAccumulatesButByValueDoesNot) {
     Store store;
-    store.set("a", Value{std::string("1")});
-    store.set("b", Value{std::string("22")});
+    store.set("a", Value(std::string("1")));
+    store.set("b", Value(std::string("22")));
 
     int by_reference = 0;
     store.for_each([&by_reference](const std::string&, const Value& v) {

@@ -4,64 +4,70 @@
 #include <string_view>
 #include <variant>
 
+#include "errors.hpp"
 #include "parser.hpp"
 
 TEST(Parser, ParsesSubmitWithTailBody) {
     const InputLine line{"SUBMIT build 5 make -j8 all"};
     const auto command = parse(line);
 
-    ASSERT_TRUE(command.has_value());
-    ASSERT_TRUE(std::holds_alternative<SubmitCommand>(*command));
-    const auto& submit = std::get<SubmitCommand>(*command);
+    ASSERT_TRUE(std::holds_alternative<SubmitCommand>(command));
+    const auto& submit = std::get<SubmitCommand>(command);
+
     EXPECT_EQ(submit.queue, std::string_view("build"));
     EXPECT_EQ(submit.priority, 5);
     EXPECT_EQ(submit.body, std::string_view("make -j8 all"));
 }
 
-TEST(Parser, ParsesPoll) {
-    const InputLine line{"POLL build"};
-    EXPECT_TRUE(std::holds_alternative<PollCommand>(*parse(line)));
+TEST(Parser, AckTakesTaskId) {
+    const InputLine line{"ACK 42"};
+    const auto command = parse(line);
+
+    ASSERT_TRUE(std::holds_alternative<AckCommand>(command));
+    EXPECT_EQ(std::get<AckCommand>(command).id, 42u);
 }
 
 TEST(Parser, VerbIsCaseInsensitive) {
     const InputLine line{"poll build"};
-    EXPECT_TRUE(parse(line).has_value());
+
+    EXPECT_TRUE(std::holds_alternative<PollCommand>(parse(line)));
 }
 
 TEST(Parser, PriorityOutOfRangeIsRejected) {
     const InputLine too_big{"SUBMIT build 42 make all"};
     const InputLine negative{"SUBMIT build -1 make all"};
-    EXPECT_FALSE(parse(too_big).has_value());
-    EXPECT_FALSE(parse(negative).has_value());
+
+    EXPECT_THROW((void)parse(too_big), ParseError);
+    EXPECT_THROW((void)parse(negative), ParseError);
 }
 
 TEST(Parser, PriorityRejectsTrailingGarbage) {
     const InputLine line{"SUBMIT build 5x make all"};
-    EXPECT_FALSE(parse(line).has_value());
+
+    EXPECT_THROW((void)parse(line), ParseError);
+}
+
+TEST(Parser, TaskIdRejectsGarbage) {
+    const InputLine line{"ACK 12abc"};
+
+    EXPECT_THROW((void)parse(line), ParseError);
 }
 
 TEST(Parser, EmptyBodyIsRejected) {
     const InputLine line{"SUBMIT build 5    "};
-    EXPECT_FALSE(parse(line).has_value());
-}
 
-TEST(Parser, BumpDefaultsToOne) {
-    const InputLine line{"BUMP build"};
-    const auto command = parse(line);
-
-    ASSERT_TRUE(command.has_value());
-    EXPECT_EQ(std::get<BumpCommand>(*command).by, 1);
+    EXPECT_THROW((void)parse(line), ParseError);
 }
 
 TEST(Parser, RejectsUnknownVerb) {
     const InputLine line{"FLUSH build"};
-    EXPECT_FALSE(parse(line).has_value());
+
+    EXPECT_THROW((void)parse(line), ParseError);
 }
 
 TEST(Parser, ResultBorrowsFromInputLine) {
     const InputLine line{"POLL build"};
     const auto command = parse(line);
 
-    ASSERT_TRUE(command.has_value());
-    EXPECT_EQ(std::get<PollCommand>(*command).queue.data(), line.view().data() + 5);
+    EXPECT_EQ(std::get<PollCommand>(command).queue.data(), line.view().data() + 5);
 }

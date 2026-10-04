@@ -1,6 +1,5 @@
 #pragma once
 
-#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -22,6 +21,5 @@ private:
     std::string text_;
 };
 
-[[nodiscard]] std::optional<Command> parse(const InputLine& line);
-
-std::optional<Command> parse(InputLine&&) = delete;
+[[nodiscard]] Command parse(const InputLine& line);
+Command parse(InputLine&&) = delete;

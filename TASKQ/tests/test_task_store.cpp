@@ -4,11 +4,14 @@
 #include <utility>
 #include <vector>
 
+#include "errors.hpp"
 #include "task_store.hpp"
 #include "tracked.hpp"
 
+
 TEST(TaskStore, SubmitThenPeek) {
     TaskStore store;
+    store.create_queue("build");
     store.submit("build", Task(1, "make all", 5));
 
     if (const auto front = store.peek("build"); front) {
@@ -19,41 +22,45 @@ TEST(TaskStore, SubmitThenPeek) {
     EXPECT_EQ(store.size("build"), 1u);
 }
 
-TEST(TaskStore, TakeRemovesTaskInFifoOrder) {
+TEST(TaskStore, LeaseTakesPendingInFifoOrder) {
     TaskStore store;
+    store.create_queue("build");
     store.submit("build", Task(1, "first", 0));
     store.submit("build", Task(2, "second", 0));
 
-    auto taken = store.take("build");
-    ASSERT_TRUE(taken.has_value());
-    EXPECT_EQ(taken->id(), 1u);
-    EXPECT_EQ(store.size("build"), 1u);
+    auto leased = store.lease("build");
 
-    taken = store.take("build");
-    ASSERT_TRUE(taken.has_value());
-    EXPECT_EQ(taken->id(), 2u);
-    EXPECT_FALSE(store.take("build").has_value());
+    ASSERT_TRUE(leased.has_value());
+    EXPECT_EQ(leased->id(), 1u);
+    EXPECT_TRUE(leased->state() == State::Leased);
+
+    leased = store.lease("build");
+
+    ASSERT_TRUE(leased.has_value());
+    EXPECT_EQ(leased->id(), 2u);
+    EXPECT_FALSE(store.lease("build").has_value());
+    EXPECT_EQ(store.size("build"), 2u);
 }
 
-TEST(TaskStore, NullptrMeansTwoDifferentThings) {
+TEST(TaskStore, EmptyAndMissingQueueAreFinallyDistinct) {
     TaskStore store;
     store.create_queue("build");
 
     EXPECT_FALSE(store.peek("build").has_value());
-    EXPECT_FALSE(store.peek("absent").has_value());
-    EXPECT_EQ(store.queue_count(), 1u);
+    EXPECT_THROW((void)store.peek("absent"), UnknownQueueError);
 }
 
 TEST(TaskStore, PeekingMissingQueueCreatesNothing) {
-    TaskStore store;
-    EXPECT_FALSE(store.peek("absent").has_value());
+    const TaskStore store;
 
+    EXPECT_THROW((void)store.peek("absent"), UnknownQueueError);
     EXPECT_EQ(store.queue_count(), 0u);
     EXPECT_TRUE(store.empty());
 }
 
 TEST(TaskStore, CreateQueueReportsWhetherItWasNew) {
     TaskStore store;
+
     EXPECT_TRUE(store.create_queue("build"));
     EXPECT_FALSE(store.create_queue("build"));
     EXPECT_EQ(store.queue_count(), 1u);
@@ -61,6 +68,7 @@ TEST(TaskStore, CreateQueueReportsWhetherItWasNew) {
 
 TEST(TaskStore, SubmittingTemporaryDoesNotCopy) {
     BasicTaskStore<Tracked> store;
+    store.create_queue("build");
     Tracked::reset();
 
     store.submit("build", Tracked{std::string("payload")});
@@ -71,7 +79,8 @@ TEST(TaskStore, SubmittingTemporaryDoesNotCopy) {
 
 TEST(TaskStore, SubmittingNamedTaskCopiesExactlyOnce) {
     BasicTaskStore<Tracked> store;
-    Tracked named{std::string("payload")};
+    store.create_queue("build");
+    const Tracked named{std::string("payload")};
     Tracked::reset();
 
     store.submit("build", named);
@@ -81,6 +90,7 @@ TEST(TaskStore, SubmittingNamedTaskCopiesExactlyOnce) {
 
 TEST(TaskStore, ExplicitMoveDoesNotCopy) {
     BasicTaskStore<Tracked> store;
+    store.create_queue("build");
     Tracked named{std::string("payload")};
     Tracked::reset();
 
@@ -89,20 +99,12 @@ TEST(TaskStore, ExplicitMoveDoesNotCopy) {
     EXPECT_EQ(Tracked::copies(), 0);
 }
 
-TEST(TaskStore, TakeMovesInsteadOfCopying) {
-    BasicTaskStore<Tracked> store;
-    store.submit("build", Tracked{std::string("payload")});
-    Tracked::reset();
-
-    const auto out = store.take("build");
-    ASSERT_TRUE(out.has_value());
-
-    EXPECT_EQ(Tracked::copies(), 0);
-    EXPECT_GE(Tracked::moves(), 1);
-}
 
 TEST(TaskStore, ForEachQueueVisitsQueuesInNameOrder) {
     TaskStore store;
+    store.create_queue("a");
+    store.create_queue("b");
+    store.create_queue("c");
     store.submit("b", Task(2, "x"));
     store.submit("a", Task(1, "x"));
     store.submit("c", Task(3, "x"));
@@ -120,6 +122,8 @@ TEST(TaskStore, ForEachQueueVisitsQueuesInNameOrder) {
 
 TEST(TaskStore, CaptureByReferenceAccumulatesButByValueDoesNot) {
     TaskStore store;
+    store.create_queue("a");
+    store.create_queue("b");
     store.submit("a", Task(1, "x"));
     store.submit("a", Task(2, "x"));
     store.submit("b", Task(3, "x"));

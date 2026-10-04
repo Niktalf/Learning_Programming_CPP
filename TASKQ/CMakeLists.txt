@@ -10,14 +10,19 @@ add_library(taskq_warnings INTERFACE)
 target_compile_options(taskq_warnings INTERFACE -Wall -Wextra -Wshadow)
 
 include(FetchContent)
-FetchContent_Declare(googletest
+FetchContent_Declare(
+        googletest
         GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG        v1.15.2)
+        GIT_TAG        v1.15.2
+)
 FetchContent_MakeAvailable(googletest)
 
 add_library(
         taskq_core
         src/task.cpp
+        src/state.cpp
+        src/errors.cpp
+        src/handler.cpp
         src/lexer.cpp
         src/parser.cpp
         src/executor.cpp
@@ -39,6 +44,10 @@ add_executable(
         tests/test_parser.cpp
         tests/test_executor.cpp
         tests/test_lifetime.cpp
+        tests/test_state.cpp
+        tests/test_errors.cpp
+        tests/test_guarantee.cpp
+        tests/test_handler.cpp
 )
 target_link_libraries(taskq_tests PRIVATE taskq_core taskq_warnings GTest::gtest_main)
 

@@ -18,7 +18,7 @@ public:
     [[nodiscard]] const char* data() const noexcept { return data_; }
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
     [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
-    [[nodiscard]] std::string str() const { return std::string(data_, size_); }
+    [[nodiscard]] std::string str() const { return std::string{ data_, size_ }; }
 
     friend void swap(OwningBuffer& a, OwningBuffer& b) noexcept;
 

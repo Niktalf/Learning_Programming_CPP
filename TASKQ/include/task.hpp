@@ -8,6 +8,8 @@
 #include <utility>
 #include <variant>
 
+#include "state.hpp"
+
 using TaskId = std::uint64_t;
 using Timestamp = std::chrono::system_clock::time_point;
 
@@ -36,6 +38,9 @@ public:
     [[nodiscard]] int priority() const noexcept { return priority_; }
     [[nodiscard]] Timestamp created_at() const noexcept { return at_; }
 
+    [[nodiscard]] State state() const noexcept { return state_; }
+    void set_state(const State state) noexcept { state_ = state; }
+
     [[nodiscard]] std::string_view type_name() const noexcept;
     [[nodiscard]] std::string to_string() const;
     [[nodiscard]] std::size_t size() const noexcept;
@@ -49,13 +54,15 @@ private:
     Payload payload_;
     int priority_ = 0;
     Timestamp at_ = Timestamp{};
+    State state_ = State::Pending;
 };
 
-inline bool operator==(const Task& lhs, const Task& rhs) noexcept {
+inline bool operator==(const Task& lhs, const Task& rhs) {
     return lhs.id() == rhs.id() && lhs.payload() == rhs.payload() &&
-           lhs.priority() == rhs.priority() && lhs.created_at() == rhs.created_at();
+           lhs.priority() == rhs.priority() && lhs.created_at() == rhs.created_at() &&
+           lhs.state() == rhs.state();
 }
 
-inline bool operator!=(const Task& lhs, const Task& rhs) noexcept {
+inline bool operator!=(const Task& lhs, const Task& rhs) {
     return !(lhs == rhs);
 }
