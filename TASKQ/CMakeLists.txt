@@ -19,14 +19,17 @@ FetchContent_MakeAvailable(googletest)
 
 add_library(
         taskq_core
-        src/task.cpp
-        src/state.cpp
         src/errors.cpp
-        src/handler.cpp
-        src/lexer.cpp
-        src/parser.cpp
         src/executor.cpp
+        src/file.cpp
+        src/handler.cpp
+        src/ipayload.cpp
+        src/lexer.cpp
+        src/log.cpp
         src/owning_buffer.cpp
+        src/parser.cpp
+        src/state.cpp
+        src/task.cpp
 )
 target_include_directories(taskq_core PUBLIC include)
 target_link_libraries(taskq_core PRIVATE taskq_warnings)
@@ -37,17 +40,21 @@ target_link_libraries(taskq_cli PRIVATE taskq_core taskq_warnings)
 enable_testing()
 add_executable(
         taskq_tests
-        tests/test_task.cpp
-        tests/test_owning_buffer.cpp
-        tests/test_task_store.cpp
-        tests/test_lexer.cpp
-        tests/test_parser.cpp
-        tests/test_executor.cpp
-        tests/test_lifetime.cpp
-        tests/test_state.cpp
         tests/test_errors.cpp
+        tests/test_executor.cpp
+        tests/test_file.cpp
         tests/test_guarantee.cpp
         tests/test_handler.cpp
+        tests/test_hierarchy.cpp
+        tests/test_lease.cpp
+        tests/test_lexer.cpp
+        tests/test_lifetime.cpp
+        tests/test_log.cpp
+        tests/test_owning_buffer.cpp
+        tests/test_parser.cpp
+        tests/test_state.cpp
+        tests/test_task.cpp
+        tests/test_task_store.cpp
 )
 target_link_libraries(taskq_tests PRIVATE taskq_core taskq_warnings GTest::gtest_main)
 

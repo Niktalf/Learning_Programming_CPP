@@ -21,9 +21,11 @@ TEST(Parser, MsgTakesRestOfLineAsText) {
     const auto command = parse(line);
 
     ASSERT_TRUE(std::holds_alternative<MsgCommand>(command));
-    const auto& msg = std::get<MsgCommand>(command);
-    ASSERT_EQ(msg.rooms.size(), 1u);
-    EXPECT_EQ(msg.text, std::string_view("hi everyone, how are you"));
+
+    const auto& [rooms, text] = std::get<MsgCommand>(command);
+
+    ASSERT_EQ(rooms.size(), 1u);
+    EXPECT_EQ(text, std::string_view("hi everyone, how are you"));
 }
 
 TEST(Parser, RoomMustStartWithHash) {
@@ -68,17 +70,17 @@ TEST(Parser, ResultBorrowsFromInputLine) {
 }
 
 TEST(Parser, MsgToSeveralRooms) {
-    const InputLine line{"/msg #a #b #c текст"};
+    const InputLine line{"/msg #a #b #c text"};
     const auto command = parse(line);
     const auto& msg = std::get<MsgCommand>(command);
 
     ASSERT_EQ(msg.rooms.size(), 3u);
     EXPECT_EQ(msg.rooms[2], std::string_view("#c"));
-    EXPECT_EQ(msg.text, std::string_view("текст"));
+    EXPECT_EQ(msg.text, std::string_view("text"));
 }
 
 TEST(Parser, MsgWithoutRoomIsRejected) {
-    const InputLine line{"/msg просто текст"};
+    const InputLine line{"/msg jast a text"};
 
     EXPECT_THROW((void)parse(line), ParseError);
 }

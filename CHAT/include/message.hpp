@@ -16,7 +16,7 @@ public:
     Message(std::string author, std::unique_ptr<IMessage> body, const Timestamp at = Timestamp{})
         :   author_(std::move(author)), body_(std::move(body)), at_(at) {}
 
-    Message(std::string author, std::string text, Timestamp at = Timestamp{})
+    Message(std::string author, std::string text, const Timestamp at = Timestamp{})
         :   Message(std::move(author), std::make_unique<TextMessage>(std::move(text)), at) {}
 
     Message(const Message& other) : author_(other.author_), body_(other.body_->clone()), at_(other.at_) {}

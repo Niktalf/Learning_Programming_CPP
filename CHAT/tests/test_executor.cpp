@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -62,17 +63,14 @@ TEST(Executor, ReactOnTextThrowsTypeMismatch) {
 
 TEST(Executor, MessageToMissingRoomThrows) {
     ChatStore store;
+
     EXPECT_THROW(run(store, "/msg #absent hello"), UnknownRoomError);
 }
 
 TEST(Executor, ReactOnReactionAccumulates) {
     ChatStore store;
-    store.post("#general", Message("me", Body {
-        Reaction {
-            .emoji = "+1",
-            .count = 0
-        }
-    }));
+    store.post("#general", Message("me", std::make_unique<ReactionMessage>("+1", 0)));
+
     EXPECT_EQ(run(store, "/react #general 0").text, std::string("1"));
     EXPECT_EQ(run(store, "/react #general 0 4").text, std::string("5"));
 }
@@ -81,5 +79,6 @@ TEST(Executor, MissingMessageIndexThrows) {
     ChatStore store;
     run(store, "/join #general");
     run(store, "/msg #general text");
+
     EXPECT_THROW(run(store, "/type #general 99"), ChatError);
 }

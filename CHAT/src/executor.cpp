@@ -140,6 +140,5 @@ Response execute(ChatStore& store, const Command& command) {
                 .text = text.empty() ? "(nothing)\n" : text
             };
         },
-    },
-    command);
+    }, command);
 }

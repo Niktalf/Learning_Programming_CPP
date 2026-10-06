@@ -6,7 +6,6 @@
 
 #include "owning_buffer.hpp"
 
-
 TEST(OwningBuffer, CopyIsIndependent) {
     OwningBuffer original{std::string("payload")};
     OwningBuffer copy{original};

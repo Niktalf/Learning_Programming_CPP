@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include <errors.hpp>
+
 Tokens tokenize(const std::string_view line, const std::size_t max_tokens) {
     Tokens tokens;
     std::size_t i = 0;

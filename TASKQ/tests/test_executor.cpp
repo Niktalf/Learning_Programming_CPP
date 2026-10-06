@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -35,12 +36,13 @@ TEST(Executor, PollLeasesInFifoOrderWithoutRemoving) {
     TaskStore store;
     Service service{store};
     run(service, "CREATE build");
+    run(service, "WORKER w");
     run(service, "SUBMIT build 5 first");
     run(service, "SUBMIT build 5 second");
 
-    EXPECT_NE(run(service, "POLL build").text.find("first"), std::string::npos);
-    EXPECT_NE(run(service, "POLL build").text.find("second"), std::string::npos);
-    EXPECT_EQ(run(service, "POLL build").text, std::string("(queue is empty)"));
+    EXPECT_NE(run(service, "POLL build w").text.find("first"), std::string::npos);
+    EXPECT_NE(run(service, "POLL build w").text.find("second"), std::string::npos);
+    EXPECT_EQ(run(service, "POLL build w").text, std::string("(queue is empty)"));
     EXPECT_EQ(store.size("build"), 2u);
 }
 
@@ -57,8 +59,10 @@ TEST(Executor, StatusReportsState) {
     TaskStore store;
     Service service{store};
     run(service, "CREATE build");
+    run(service, "WORKER w");
     run(service, "SUBMIT build 5 x");
-    run(service, "POLL build");
+    run(service, "POLL build w");
+
     EXPECT_NE(run(service, "STATUS 1").text.find("leased"), std::string::npos);
 }
 
@@ -75,7 +79,7 @@ TEST(Executor, BumpOnNumericAccumulates) {
     TaskStore store;
     Service service{store};
     store.create_queue("build");
-    store.submit("build", Task(1, Payload{NumericPayload{10}}, 5));
+    store.submit("build", Task(1, std::make_unique<NumericPayload>(10), 5));
 
     EXPECT_EQ(run(service, "BUMP 1").text, std::string("11"));
     EXPECT_EQ(run(service, "BUMP 1 9").text, std::string("20"));
@@ -90,4 +94,19 @@ TEST(Executor, BatchCreatesTaskPerQueue) {
     EXPECT_EQ(run(service, "BATCH build,test 5 make all").text, std::string("OK 2 tasks"));
     EXPECT_EQ(store.size("build"), 1u);
     EXPECT_EQ(store.size("test"), 1u);
+}
+
+TEST(Executor, StatusShowsHolderAndAbandonment) {
+    TaskStore store;
+    Service service{store};
+    run(service, "CREATE build");
+    run(service, "WORKER w");
+    run(service, "SUBMIT build 5 x");
+    run(service, "POLL build w");
+
+    EXPECT_NE(run(service, "STATUS 1").text.find("у=w"), std::string::npos);
+
+    run(service, "GONE w");
+
+    EXPECT_NE(run(service, "STATUS 1").text.find("abandoned"), std::string::npos);
 }

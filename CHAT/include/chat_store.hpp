@@ -58,6 +58,7 @@ public:
         }
         rooms_.swap(next);
     }
+
     void claim_nick(std::string nick) {
         if (users_.find(nick) != users_.end()) {
             throw NicknameTakenError(std::move(nick));
@@ -80,14 +81,14 @@ public:
         if (user == users_.end()) {
             throw UnknownUserError(std::string(nick));
         }
-        if (rooms_.find(room) != rooms_.end()) {
+        if (rooms_.find(room) == rooms_.end()) {
             throw UnknownRoomError(std::string(room));
         }
         members_[std::string(room)].push_back(user->second);
     }
 
     [[nodiscard]] std::vector<std::shared_ptr<User>> members(std::string_view room) {
-        if (rooms_.find(room) != rooms_.end()) {
+        if (rooms_.find(room) == rooms_.end()) {
             throw UnknownRoomError(std::string(room));
         }
         std::vector<std::shared_ptr<User>> alive;
@@ -114,6 +115,7 @@ public:
         a.users_.swap(b.users_);
         a.members_.swap(b.members_);
     }
+
     bool drop_room(std::string_view room) {
         typename Map::iterator it = rooms_.find(room);
         if (it == rooms_.end()) {

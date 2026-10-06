@@ -12,11 +12,12 @@ TEST(Parser, ParsesSubmitWithTailBody) {
     const auto command = parse(line);
 
     ASSERT_TRUE(std::holds_alternative<SubmitCommand>(command));
-    const auto& submit = std::get<SubmitCommand>(command);
 
-    EXPECT_EQ(submit.queue, std::string_view("build"));
-    EXPECT_EQ(submit.priority, 5);
-    EXPECT_EQ(submit.body, std::string_view("make -j8 all"));
+    const auto& [queue, priority, body] = std::get<SubmitCommand>(command);
+
+    EXPECT_EQ(queue, std::string_view("build"));
+    EXPECT_EQ(priority, 5);
+    EXPECT_EQ(body, std::string_view("make -j8 all"));
 }
 
 TEST(Parser, AckTakesTaskId) {
@@ -28,7 +29,7 @@ TEST(Parser, AckTakesTaskId) {
 }
 
 TEST(Parser, VerbIsCaseInsensitive) {
-    const InputLine line{"poll build"};
+    const InputLine line{"poll build w1"};
 
     EXPECT_TRUE(std::holds_alternative<PollCommand>(parse(line)));
 }
@@ -66,8 +67,9 @@ TEST(Parser, RejectsUnknownVerb) {
 }
 
 TEST(Parser, ResultBorrowsFromInputLine) {
-    const InputLine line{"POLL build"};
+    const InputLine line{"POLL build w1"};
     const auto command = parse(line);
 
     EXPECT_EQ(std::get<PollCommand>(command).queue.data(), line.view().data() + 5);
+    EXPECT_EQ(std::get<PollCommand>(command).worker, std::string_view("w1"));
 }

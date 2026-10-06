@@ -27,11 +27,17 @@ Response handle(Service& service, std::string line) {
             .ok = false,
             .text = "ERR no such task: " + std::to_string(e.id())
         };
+    } catch (const UnknownWorkerError& e) {
+        return Response{
+            .ok = false,
+            .text = "ERR no such worker: " + e.name()
+        };
     } catch (const InvalidTransitionError& e) {
         return Response {
             .ok = false,
-            .text = "ERR task " + std::to_string(e.id()) + " is " + std::string(name(e.from())) +
-                ", cannot become " + std::string(name(e.to()))};
+            .text = "ERR task " + std::to_string(e.id()) + " is " +
+                std::string(name(e.from())) + ", cannot become " +
+                    std::string(name(e.to()))};
     } catch (const TypeMismatchError& e) {
         return Response {
             .ok = false,

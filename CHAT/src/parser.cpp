@@ -5,6 +5,7 @@
 #include <string>
 
 #include "lexer.hpp"
+#include "errors.hpp"
 
 namespace {
     [[nodiscard]] bool is(const std::string_view token, const std::string_view name) noexcept {
@@ -21,7 +22,7 @@ namespace {
         return true;
     }
 
-    [[noreturn]] void fail(std::string reason, std::string_view line) {
+    [[noreturn]] void fail(std::string reason, const std::string_view line) {
         throw ParseError(std::move(reason), std::string(line));
     }
 
