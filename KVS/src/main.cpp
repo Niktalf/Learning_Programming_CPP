@@ -3,7 +3,9 @@
 #include <string_view>
 #include <utility>
 
+#include "errors.hpp"
 #include "handler.hpp"
+#include "log.hpp"
 #include "store.hpp"
 
 namespace {
@@ -16,33 +18,46 @@ namespace {
                   << "  EXISTS <key>                    1 or 0\n"
                   << "  TYPE <key>                      Value type\n"
                   << "  INCR <key> [step]               increment integer\n"
+                  << "  RPUSH <key> <elements>          push to end of list\n"
+                  << "  LLEN <key>                      length of list\n"
                   << "  KEYS                            list the keys\n"
                   << "  HELP / QUIT\n";
     }
 }  // namespace
 
 int main() {
-    std::cout << "KVS, stage 3\n";
-    print_help();
-
-    std::string raw;
-    while (std::getline(std::cin, raw)) {
+    try {
         Store store;
-        const std::string_view view = raw;
-        if (view == "QUIT") {
-            break;
+        AppendOnlyLog log("kvs.log");
+        std::cout << "KVS, stage 4\n";
+        print_help();
+
+        std::string raw;
+        while (std::getline(std::cin, raw)) {
+            const std::string_view view = raw;
+            if (view == "QUIT") {
+                break;
+            }
+            if (view == "HELP") {
+                print_help();
+                continue;
+            }
+            if (view == "KEYS") {
+                store.for_each([](const std::string& key, const Value&) {
+                    std::cout << key << '\n';
+                });
+                continue;
+            }
+            std::string record = raw;
+            const auto [ok, text] = handle(store, std::move(raw));
+            if (ok) {
+                log.append(record);
+            }
+            std::cout << text << '\n';
         }
-        if (view == "HELP") {
-            print_help();
-            continue;
-        }
-        if (view == "KEYS") {
-            store.for_each([](const std::string& key, const Value&) {
-                std::cout << key << '\n';
-            });
-            continue;
-        }
-        std::cout << handle(store, std::move(raw)).text << '\n';
+    } catch (const KvError& e) {
+        std::cerr << e.what() << '\n';
+        return 1;
     }
     return 0;
 }

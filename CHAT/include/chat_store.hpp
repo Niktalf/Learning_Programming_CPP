@@ -3,8 +3,8 @@
 #include <cstddef>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
-#include <set>
 #include <string_view>
 #include <string>
 #include <utility>
@@ -12,6 +12,7 @@
 
 #include "errors.hpp"
 #include "message.hpp"
+#include "user.hpp"
 
 template <class M>
 class BasicChatStore {
@@ -58,13 +59,60 @@ public:
         rooms_.swap(next);
     }
     void claim_nick(std::string nick) {
-        if (!nicks_.insert(nick).second) {
+        if (users_.find(nick) != users_.end()) {
             throw NicknameTakenError(std::move(nick));
         }
+        auto user = std::make_shared<User>(nick);
+        users_.emplace(std::move(nick), std::move(user));
     }
+
+    bool release_nick(const std::string_view nick) {
+        const auto it = users_.find(nick);
+        if (it == users_.end()) {
+            return false;
+        }
+        users_.erase(it);
+        return true;
+    }
+
+    void invite(std::string_view room, const std::string_view nick) {
+        const auto user = users_.find(nick);
+        if (user == users_.end()) {
+            throw UnknownUserError(std::string(nick));
+        }
+        if (rooms_.find(room) != rooms_.end()) {
+            throw UnknownRoomError(std::string(room));
+        }
+        members_[std::string(room)].push_back(user->second);
+    }
+
+    [[nodiscard]] std::vector<std::shared_ptr<User>> members(std::string_view room) {
+        if (rooms_.find(room) != rooms_.end()) {
+            throw UnknownRoomError(std::string(room));
+        }
+        std::vector<std::shared_ptr<User>> alive;
+        const auto it = members_.find(room);
+        if (it == members_.end()) {
+            return alive;
+        }
+        auto& observers = it->second;
+        for (auto w = observers.begin(); w != observers.end();) {
+            if (auto user = w->lock()) {
+                alive.push_back(std::move(user));
+                ++w;
+            } else {
+                w = observers.erase(w);
+            }
+        }
+        return alive;
+    }
+
+    [[nodiscard]] std::size_t user_count() const noexcept { return users_.size(); }
+
     friend void swap(BasicChatStore& a, BasicChatStore& b) noexcept {
         a.rooms_.swap(b.rooms_);
-        a.nicks_.swap(b.nicks_);
+        a.users_.swap(b.users_);
+        a.members_.swap(b.members_);
     }
     bool drop_room(std::string_view room) {
         typename Map::iterator it = rooms_.find(room);
@@ -88,7 +136,8 @@ public:
 private:
     using Map = std::map<std::string, History, std::less<>>;
     Map rooms_;
-    std::set<std::string, std::less<>> nicks_;
+    std::map<std::string, std::shared_ptr<User>, std::less<>> users_;
+    std::map<std::string, std::vector<std::weak_ptr<User>>, std::less<>> members_;
 };
 
 using ChatStore = BasicChatStore<Message>;

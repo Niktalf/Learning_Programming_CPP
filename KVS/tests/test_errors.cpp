@@ -3,7 +3,6 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
-
 #include "errors.hpp"
 
 TEST(Errors, HierarchyIsRootedAtKvError) {
@@ -15,6 +14,7 @@ TEST(Errors, HierarchyIsRootedAtKvError) {
 
 TEST(Errors, ContextIsInFieldsNotOnlyInMessage) {
     const TypeMismatchError e("counter", "int", "string");
+
     EXPECT_EQ(e.key(), std::string("counter"));
     EXPECT_EQ(e.expected(), std::string("int"));
     EXPECT_EQ(e.actual(), std::string("string"));
@@ -25,6 +25,7 @@ TEST(Errors, CatchingByBaseReferenceKeepsDerivedType) {
         throw KeyNotFoundError("absent");
     } catch (const KvError& e) {
         const auto* derived = dynamic_cast<const KeyNotFoundError*>(&e);
+
         ASSERT_NE(derived, nullptr);
         EXPECT_EQ(derived->key(), std::string("absent"));
     }
@@ -33,6 +34,7 @@ TEST(Errors, CatchingByBaseReferenceKeepsDerivedType) {
 TEST(Errors, MessageMentionsContext) {
     const ParseError e("unknown command: FOO", "FOO bar");
     const std::string what = e.what();
+
     EXPECT_NE(what.find("unknown command"), std::string::npos);
     EXPECT_NE(what.find("FOO bar"), std::string::npos);
 }

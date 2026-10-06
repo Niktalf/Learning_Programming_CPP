@@ -7,6 +7,7 @@
 #include "store.hpp"
 #include "tracked.hpp"
 
+
 TEST(Store, SetGetDelete) {
     Store store;
     store.set("greeting", Value(std::string("hello")));
@@ -23,9 +24,9 @@ TEST(Store, SetGetDelete) {
 }
 
 TEST(Store, MissingKeyDoesNotCreateEntry) {
-    Store store;
-    EXPECT_FALSE(store.get("absent").has_value());
+    const Store store;
 
+    EXPECT_FALSE(store.get("absent").has_value());
     EXPECT_EQ(store.size(), 0u);
     EXPECT_TRUE(store.empty());
 }
@@ -43,7 +44,6 @@ TEST(Store, SetOverwritesExistingKey) {
 TEST(Store, InsertingTemporaryDoesNotCopy) {
     BasicStore<Tracked> store;
     Tracked::reset();
-
     store.set("k", Tracked{std::string("payload")});
 
     EXPECT_EQ(Tracked::copies(), 0);
@@ -54,7 +54,6 @@ TEST(Store, InsertingNamedValueCopiesExactlyOnce) {
     BasicStore<Tracked> store;
     Tracked named{std::string("payload")};
     Tracked::reset();
-
     store.set("k", named);
 
     EXPECT_EQ(Tracked::copies(), 1);

@@ -48,6 +48,7 @@ TEST(Lexer, IgnoresExtraSpaces) {
 TEST(Lexer, EmptyLineYieldsNoTokens) {
     const std::string empty;
     const std::string spaces = "     ";
+
     EXPECT_TRUE(tokenize(empty).empty());
     EXPECT_TRUE(tokenize(spaces).empty());
 }

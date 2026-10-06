@@ -6,6 +6,8 @@
 #include <string_view>
 #include <vector>
 
+#include "errors.hpp"
+
 using Tokens = std::vector<std::string_view>;
 
 [[nodiscard]] Tokens tokenize(std::string_view line, std::size_t max_tokens = (std::numeric_limits<std::size_t>::max)());

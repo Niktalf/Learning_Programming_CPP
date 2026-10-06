@@ -7,7 +7,6 @@
 #include "lexer.hpp"
 #include "parser.hpp"
 
-
 namespace {
     template <class T, class = void>
     struct tokenize_accepts : std::false_type {};

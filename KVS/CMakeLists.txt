@@ -19,7 +19,11 @@ FetchContent_MakeAvailable(googletest)
 
 add_library(
         kvs_core
+        src/ivalue.cpp
         src/value.cpp
+        src/log.cpp
+        src/file.cpp
+        src/request_cache.cpp
         src/errors.cpp
         src/handler.cpp
         src/lexer.cpp
@@ -46,6 +50,10 @@ add_executable(
         tests/test_errors.cpp
         tests/test_guarantee.cpp
         tests/test_handler.cpp
+        tests/test_hierarchy.cpp
+        tests/test_log.cpp
+        tests/test_file.cpp
+        tests/test_cache.cpp
 )
 target_link_libraries(kvs_tests PRIVATE kvs_core kvs_warnings GTest::gtest_main)
 

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
 #include <string_view>
 #include <variant>
@@ -14,6 +13,9 @@ struct RoomsCommand   {};
 struct TypeCommand    { std::string_view room; std::size_t index; };
 struct ReactCommand   { std::string_view room; std::size_t index; std::int64_t by; };
 struct NickCommand    { std::string_view nick; };
+struct LogoutCommand  { std::string_view nick; };
+struct InviteCommand  { std::string_view room; std::string_view nick; };
+struct WhoCommand     { std::string_view room; };
 
-using Command = std::variant<JoinCommand, LeaveCommand, MsgCommand, HistoryCommand,
-      RoomsCommand, TypeCommand, ReactCommand, NickCommand>;
+using Command = std::variant<JoinCommand, LeaveCommand, MsgCommand, HistoryCommand, RoomsCommand, TypeCommand,
+                             ReactCommand, NickCommand, LogoutCommand, InviteCommand, WhoCommand>;

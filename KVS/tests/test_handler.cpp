@@ -20,6 +20,7 @@ TEST(Handler, SuccessPassesThrough) {
 TEST(Handler, ParseErrorBecomesResponse) {
     Store store;
     const auto [ok, text] = handle(store, "FLUSHALL");
+
     EXPECT_FALSE(ok);
     EXPECT_TRUE(starts_with(text, "ERR unknown command"));
 }
@@ -40,12 +41,11 @@ TEST(Handler, MissingKeyBecomesResponse) {
 
 TEST(Handler, TypeMismatchBecomesResponse) {
     Store store;
-    // handle помечена [[nodiscard]]: выброшенный ответ клиенту почти всегда
-    // ошибка. Здесь вызов нужен только для подготовки, и это сказано явно.
     (void)handle(store, "SET s text");
-    const auto r = handle(store, "INCR s");
-    EXPECT_FALSE(r.ok);
-    EXPECT_EQ(r.text, std::string("ERR wrong type: expected int, got string"));
+    const auto [ok, text] = handle(store, "INCR s");
+
+    EXPECT_FALSE(ok);
+    EXPECT_EQ(text, std::string("ERR wrong type: expected int, got string"));
 }
 
 TEST(Handler, NeverThrowsOnGarbage) {
@@ -61,6 +61,7 @@ TEST(Handler, FailedCommandDoesNotCorruptState) {
     Store store;
     (void)handle(store, "SET k v");
     (void)handle(store, "MSET a 1 b");
+
     EXPECT_EQ(store.size(), 1u);
     EXPECT_EQ(handle(store, "GET k").text, std::string("v"));
 }

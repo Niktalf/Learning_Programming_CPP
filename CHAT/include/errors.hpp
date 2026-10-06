@@ -40,6 +40,16 @@ private:
     std::string nick_;
 };
 
+class UnknownUserError : public ChatError {
+public:
+    explicit UnknownUserError(std::string nick);
+
+    [[nodiscard]] const std::string& nick() const noexcept { return nick_; }
+
+private:
+    std::string nick_;
+};
+
 class TypeMismatchError : public ChatError {
 public:
     TypeMismatchError(std::string room, std::string expected, std::string actual);

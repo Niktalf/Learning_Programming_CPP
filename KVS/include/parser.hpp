@@ -22,5 +22,4 @@ private:
 };
 
 [[nodiscard]] Command parse(const InputLine& line);
-
 Command parse(InputLine&&) = delete;

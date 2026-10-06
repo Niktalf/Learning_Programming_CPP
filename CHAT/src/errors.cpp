@@ -12,6 +12,9 @@ UnknownRoomError::UnknownRoomError(std::string room)
 NicknameTakenError::NicknameTakenError(std::string nick)
     :   ChatError("nickname already in use: " + nick), nick_(std::move(nick)) {}
 
+UnknownUserError::UnknownUserError(std::string nick)
+    :   ChatError("no such user: " + nick), nick_(std::move(nick)) {}
+
 TypeMismatchError::TypeMismatchError(std::string room, std::string expected, std::string actual)
     :   ChatError("type mismatch in " + room + ": expected " + expected + ", got " + actual),
         room_(std::move(room)), expected_(std::move(expected)), actual_(std::move(actual)) {}
