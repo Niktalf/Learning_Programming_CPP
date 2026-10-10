@@ -34,7 +34,7 @@ public:
     }
 
 private:
-    ValueData data_;;
+    ValueData data_;
 };
 
 inline bool operator==(const Value& lhs, const Value& rhs) noexcept {

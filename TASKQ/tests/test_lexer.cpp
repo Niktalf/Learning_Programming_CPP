@@ -4,7 +4,7 @@
 #include <string_view>
 
 #include "lexer.hpp"
-
+#include "errors.hpp"
 
 TEST(Lexer, SplitsBySpaces) {
     const std::string line = "POLL build now";
@@ -39,14 +39,16 @@ TEST(Lexer, HandlesQuotedArgument) {
     EXPECT_EQ(tokens[1], std::string_view("build tasks"));
 }
 
-TEST(Lexer, UnterminatedQuoteYieldsNothing) {
+TEST(Lexer, UnterminatedQuoteIsAnError) {
     const std::string line = R"(SUBMIT "build 5 make)";
-    EXPECT_TRUE(tokenize(line).empty());
+
+    EXPECT_THROW((void)tokenize(line), ParseError);
 }
 
 TEST(Lexer, EmptyLineYieldsNoTokens) {
     const std::string empty;
     const std::string spaces = "     ";
+
     EXPECT_TRUE(tokenize(empty).empty());
     EXPECT_TRUE(tokenize(spaces).empty());
 }

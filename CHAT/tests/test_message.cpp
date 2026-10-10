@@ -29,11 +29,15 @@ TEST(Message, StoresAuthorAndText) {
 
 TEST(Message, ReportsAlternative) {
     const Message text("me", "hello");
-    const Message reaction("me", Body{Reaction{"+1", 3}});
+    const Message reaction("me", Body{
+        Reaction{
+            .emoji = "+1",
+            .count = 3
+        }
+    });
 
     EXPECT_EQ(text.type_name(), std::string_view("text"));
     EXPECT_EQ(reaction.type_name(), std::string_view("reaction"));
-
     EXPECT_EQ(text.get_if<Reaction>(), nullptr);
     ASSERT_NE(reaction.get_if<Reaction>(), nullptr);
     EXPECT_EQ(reaction.get_if<Reaction>()->count, 3);

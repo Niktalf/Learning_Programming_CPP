@@ -1,15 +1,13 @@
 #pragma once
 
-#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 
 #include "command.hpp"
 
-
 class InputLine {
-    public:
+public:
     explicit InputLine(std::string text) noexcept : text_(std::move(text)) {}
 
     InputLine(const InputLine&) = delete;
@@ -23,6 +21,6 @@ private:
     std::string text_;
 };
 
-[[nodiscard]] std::optional<Command> parse(const InputLine& line);
+[[nodiscard]] Command parse(const InputLine& line);
 
-std::optional<Command> parse(InputLine&&) = delete;
+Command parse(InputLine&&) = delete;

@@ -4,6 +4,7 @@
 #include <string_view>
 
 #include "lexer.hpp"
+#include "errors.hpp"
 
 TEST(Lexer, SplitsBySpaces) {
     const std::string line = "SET key value";
@@ -31,9 +32,9 @@ TEST(Lexer, HandlesQuotedArgument) {
     EXPECT_EQ(tokens[2], std::string_view("hello world"));
 }
 
-TEST(Lexer, UnterminatedQuoteYieldsNothing) {
+TEST(Lexer, UnterminatedQuoteIsAnError) {
     const std::string line = R"(SET greeting "hello)";
-    EXPECT_TRUE(tokenize(line).empty());
+    EXPECT_THROW((void)tokenize(line), ParseError);
 }
 
 TEST(Lexer, IgnoresExtraSpaces) {

@@ -6,7 +6,6 @@
 
 #include "owning_buffer.hpp"
 
-
 TEST(OwningBuffer, CopyIsIndependent) {
     OwningBuffer original{std::string("payload")};
     OwningBuffer copy{original};
@@ -29,7 +28,6 @@ TEST(OwningBuffer, MoveTransfersOwnership) {
 
 TEST(OwningBuffer, SelfAssignmentIsSafe) {
     OwningBuffer buffer{std::string("payload")};
-
     OwningBuffer& alias = buffer;
     buffer = alias;
 

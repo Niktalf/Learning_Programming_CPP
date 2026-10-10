@@ -7,6 +7,7 @@
 
 #include "task.hpp"
 
+
 TEST(Task, RuleOfZeroHoldsAtCompileTime) {
     EXPECT_TRUE(std::is_nothrow_move_constructible_v<Task>);
     EXPECT_TRUE(std::is_nothrow_move_assignable_v<Task>);
@@ -30,11 +31,14 @@ TEST(Task, StoresFields) {
 
 TEST(Task, ReportsAlternative) {
     const Task text(1, "make all");
-    const Task number(2, Payload{NumericPayload{7}});
+    const Task number(2, Payload{
+        NumericPayload{
+            .value = 7
+        }
+    });
 
     EXPECT_EQ(text.type_name(), std::string_view("text"));
     EXPECT_EQ(number.type_name(), std::string_view("number"));
-
     EXPECT_EQ(text.get_if<NumericPayload>(), nullptr);
     ASSERT_NE(number.get_if<NumericPayload>(), nullptr);
     EXPECT_EQ(number.get_if<NumericPayload>()->value, 7);

@@ -1,60 +1,39 @@
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <utility>
 
-#include "executor.hpp"
-#include "parser.hpp"
+#include "handler.hpp"
 #include "store.hpp"
 
 namespace {
-void print_help() {
-    std::cout << "Commands:\n"
-              << "  SET <key> <value>   write down\n"
-              << "  GET <key>           read\n"
-              << "  DEL <key>           delete\n"
-              << "  KEYS                list the keys\n"
-              << "  COUNT               count of records\n"
-              << "  DEMO                difference in grips in the lambda\n"
-              << "  HELP / QUIT\n";
-}
-
-void run_capture_demo(const Store& store) {
-    int by_reference = 0;
-    store.for_each([&by_reference](const std::string&, const Value& v) {
-        by_reference += static_cast<int>(v.size());
-    });
-
-    int by_value = 0;
-    store.for_each([by_value](const std::string&, const Value& v) mutable {
-        by_value += static_cast<int>(v.size());
-    });
-
-    std::cout << "capture by reference: " << by_reference << '\n'
-              << "capture by value:     " << by_value
-              << "   (copy inside the lambda changed)\n";
-}
-
+    void print_help() {
+        std::cout << "Commands:\n"
+                  << "  SET <key> <value>               write down\n"
+                  << "  MSET <k1> <v1> <k2> <v2>...     write down a few, all or nothing\n"
+                  << "  GET <key>                       read\n"
+                  << "  DEL <key>                       delete\n"
+                  << "  EXISTS <key>                    1 or 0\n"
+                  << "  TYPE <key>                      Value type\n"
+                  << "  INCR <key> [step]               increment integer\n"
+                  << "  KEYS                            list the keys\n"
+                  << "  HELP / QUIT\n";
+    }
 }  // namespace
 
 int main() {
-    std::cout << "KVS, stage 2\n";
+    std::cout << "KVS, stage 3\n";
     print_help();
 
     std::string raw;
     while (std::getline(std::cin, raw)) {
         Store store;
-        const InputLine line{std::move(raw)};
-
-        const std::string_view view = line.view();
+        const std::string_view view = raw;
         if (view == "QUIT") {
             break;
         }
         if (view == "HELP") {
             print_help();
-            continue;
-        }
-        if (view == "DEMO") {
-            run_capture_demo(store);
             continue;
         }
         if (view == "KEYS") {
@@ -63,12 +42,7 @@ int main() {
             });
             continue;
         }
-
-        if (const auto command = parse(line); command) {
-            std::cout << execute(store, *command).text << '\n';
-        } else {
-            std::cout << "(not parsed; HELP will show a list of commands)\n";
-        }
+        std::cout << handle(store, std::move(raw)).text << '\n';
     }
     return 0;
 }

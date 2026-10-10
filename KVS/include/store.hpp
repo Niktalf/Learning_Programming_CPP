@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "value.hpp"
 
@@ -28,6 +29,16 @@ public:
     [[nodiscard]] bool contains(std::string_view key) const noexcept {
         return data_.find(key) != data_.end();
     }
+
+    void mset(const std::vector<std::pair<std::string, V>>& pairs) {
+        Map next = data_;
+        for (const auto& [key, value] : pairs) {
+            next.insert_or_assign(key, value);
+        }
+        data_.swap(next);
+    }
+
+    friend void swap(BasicStore& a, BasicStore& b) noexcept { a.data_.swap(b.data_); }
 
     bool del(std::string_view key) {
         typename Map::iterator it = data_.find(key);

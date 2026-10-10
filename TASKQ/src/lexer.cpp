@@ -1,7 +1,8 @@
 #include "lexer.hpp"
 
-#include <cstddef>
-#include <string_view>
+#include <string>
+
+#include "errors.hpp"
 
 Tokens tokenize(const std::string_view line, const std::size_t max_tokens) {
     Tokens tokens;
@@ -18,7 +19,7 @@ Tokens tokenize(const std::string_view line, const std::size_t max_tokens) {
         if (line[i] == '"') {
             const auto end = line.find('"', ++i);
             if (end == std::string_view::npos) {
-                return {};
+                throw ParseError("unterminated quote", std::string(line));
             }
             tokens.push_back(line.substr(i, end - i));
             i = end + 1;
@@ -38,3 +39,4 @@ Tokens tokenize(const std::string_view line, const std::size_t max_tokens) {
     }
     return tokens;
 }
+

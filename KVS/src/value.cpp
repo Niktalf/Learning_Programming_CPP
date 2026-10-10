@@ -13,18 +13,18 @@ static_assert(std::is_nothrow_destructible_v<Value>, "Value must be destroyed wi
 std::string_view Value::type_name() const noexcept {
     return std::visit(overloaded{
         [](const std::string&) -> std::string_view { return "string"; },
-        [](std::int64_t) -> std::string_view { return "int"; },
-        [](double) -> std::string_view { return "float"; },
+            [](std::int64_t) -> std::string_view { return "int"; },
+                [](double) -> std::string_view { return "float"; },
     }, data_);
 }
 
 std::string Value::to_string() const {
     return std::visit(overloaded{
         [](const std::string& s) { return s; },
-            [](const std::int64_t i) {
-                std::ostringstream out;
-                out << i;
-                return out.str();
+        [](const std::int64_t i) {
+            std::ostringstream out;
+            out << i;
+            return out.str();
         },
         [](const double d) {
             std::ostringstream out;
