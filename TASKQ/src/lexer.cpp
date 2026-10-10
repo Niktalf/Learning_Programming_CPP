@@ -39,4 +39,3 @@ Tokens tokenize(const std::string_view line, const std::size_t max_tokens) {
     }
     return tokens;
 }
-

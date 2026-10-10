@@ -35,7 +35,7 @@ Response execute(ChatStore& store, const Command& command) {
     return std::visit(overloaded{
         [&](const JoinCommand& c) {
             return store.create_room(std::string(c.room)) ?
-            Response{
+            Response {
                 .ok = true,
                 .text = "OK"
             } : Response {
@@ -92,14 +92,14 @@ Response execute(ChatStore& store, const Command& command) {
         },
         [&](const ReactCommand& c) {
             Message& message = require_message(store, c.room, c.index);
-            auto* reaction = message.get_if<Reaction>();
+            auto* reaction = message.as<ReactionMessage>();
             if (reaction == nullptr) {
                 throw TypeMismatchError(std::string(c.room), "reaction",
                     std::string(message.type_name()));
             }
-            reaction->count += c.by;
+            reaction->add(c.by);
             std::ostringstream out;
-            out << reaction->count;
+            out << reaction->count();
             return Response {
                 .ok = true,
                 .text = out.str()
@@ -110,6 +110,34 @@ Response execute(ChatStore& store, const Command& command) {
             return Response {
                 .ok = true,
                 .text = "OK"
+            };
+        },
+        [&](const LogoutCommand& c) {
+            if (!store.release_nick(c.nick)) {
+                throw UnknownUserError(std::string(c.nick));
+            }
+            return Response {
+                .ok = true,
+                .text = "OK"
+            };
+        },
+        [&](const InviteCommand& c) {
+            store.invite(c.room, c.nick);
+            return Response {
+                .ok = true,
+                .text = "OK"
+            };
+        },
+        [&](const WhoCommand& c) {
+            const auto alive = store.members(c.room);
+            std::ostringstream out;
+            for (const auto& user : alive) {
+                out << user->nick() << '\n';
+            }
+            const std::string text = out.str();
+            return Response {
+                .ok = true,
+                .text = text.empty() ? "(nothing)\n" : text
             };
         },
     }, command);

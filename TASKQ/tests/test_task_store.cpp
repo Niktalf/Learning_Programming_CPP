@@ -25,20 +25,21 @@ TEST(TaskStore, SubmitThenPeek) {
 TEST(TaskStore, LeaseTakesPendingInFifoOrder) {
     TaskStore store;
     store.create_queue("build");
+    store.register_worker("w");
     store.submit("build", Task(1, "first", 0));
     store.submit("build", Task(2, "second", 0));
 
-    auto leased = store.lease("build");
+    auto leased = store.lease("build", "w");
 
     ASSERT_TRUE(leased.has_value());
     EXPECT_EQ(leased->id(), 1u);
     EXPECT_TRUE(leased->state() == State::Leased);
 
-    leased = store.lease("build");
+    leased = store.lease("build", "w");
 
     ASSERT_TRUE(leased.has_value());
     EXPECT_EQ(leased->id(), 2u);
-    EXPECT_FALSE(store.lease("build").has_value());
+    EXPECT_FALSE(store.lease("build", "w").has_value());
     EXPECT_EQ(store.size("build"), 2u);
 }
 

@@ -19,13 +19,16 @@ FetchContent_MakeAvailable(googletest)
 
 add_library(
         chat_core
-        src/message.cpp
         src/errors.cpp
-        src/handler.cpp
-        src/lexer.cpp
-        src/parser.cpp
         src/executor.cpp
+        src/file.cpp
+        src/handler.cpp
+        src/imessage.cpp
+        src/lexer.cpp
+        src/log.cpp
+        src/message.cpp
         src/owning_buffer.cpp
+        src/parser.cpp
 )
 target_include_directories(chat_core PUBLIC include)
 target_link_libraries(chat_core PRIVATE chat_warnings)
@@ -36,16 +39,20 @@ target_link_libraries(chat_cli PRIVATE chat_core chat_warnings)
 enable_testing()
 add_executable(
         chat_tests
-        tests/test_message.cpp
-        tests/test_owning_buffer.cpp
         tests/test_chat_store.cpp
-        tests/test_lexer.cpp
-        tests/test_parser.cpp
-        tests/test_executor.cpp
-        tests/test_lifetime.cpp
         tests/test_errors.cpp
+        tests/test_executor.cpp
+        tests/test_file.cpp
         tests/test_guarantee.cpp
         tests/test_handler.cpp
+        tests/test_hierarchy.cpp
+        tests/test_lexer.cpp
+        tests/test_lifetime.cpp
+        tests/test_log.cpp
+        tests/test_members.cpp
+        tests/test_message.cpp
+        tests/test_owning_buffer.cpp
+        tests/test_parser.cpp
 )
 target_link_libraries(chat_tests PRIVATE chat_core chat_warnings GTest::gtest_main)
 

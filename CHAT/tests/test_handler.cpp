@@ -24,10 +24,10 @@ TEST(Handler, ParseErrorBecomesResponse) {
 
 TEST(Handler, MessageToMissingRoomBecomesResponse) {
     ChatStore store;
-    const auto r = handle(store, "/msg #absent hello");
+    const auto [ok, text] = handle(store, "/msg #absent hello");
 
-    EXPECT_FALSE(r.ok);
-    EXPECT_EQ(r.text, std::string("ERR no such room: #absent"));
+    EXPECT_FALSE(ok);
+    EXPECT_EQ(text, std::string("ERR no such room: #absent"));
 }
 
 TEST(Handler, TakenNicknameBecomesResponse) {

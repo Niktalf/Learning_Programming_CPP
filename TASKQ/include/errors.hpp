@@ -43,6 +43,16 @@ private:
     std::uint64_t id_;
 };
 
+class UnknownWorkerError : public TaskQError {
+public:
+    explicit UnknownWorkerError(std::string name);
+
+    [[nodiscard]] const std::string& name() const noexcept { return name_; }
+
+private:
+    std::string name_;
+};
+
 class InvalidTransitionError : public TaskQError {
 public:
     InvalidTransitionError(std::uint64_t id, State from, State to);

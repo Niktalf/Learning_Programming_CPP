@@ -12,8 +12,13 @@
 namespace {
     std::string describe(const Task& task) {
         std::ostringstream out;
-        out << "id=" << task.id() << " приоритет=" << task.priority() << " состояние="
-            << name(task.state()) << ' ' << task.to_string();
+        out << "id=" << task.id() << " priority=" << task.priority() << " state=" << name(task.state());
+        if (const auto worker = task.holder()) {
+            out << " у=" << worker->name();
+        } else if (task.abandoned()) {
+            out << " (abandoned: the worker is missing)";
+        }
+        out << ' ' << task.to_string();
         return out.str();
     }
 }  // namespace
@@ -52,8 +57,8 @@ Response Service::execute(const Command& command) {
             };
         },
         [&](const PollCommand& c) {
-            if (const auto task = store_.lease(c.queue); task) {
-                return Response {
+            if (const auto task = store_.lease(c.queue, c.worker); task) {
+                return Response{
                     .ok = true,
                     .text = describe(*task)
                 };
@@ -109,14 +114,34 @@ Response Service::execute(const Command& command) {
         },
         [&](const BumpCommand& c) {
             Task& task = store_.find(c.id);
-            auto* number = task.get_if<NumericPayload>();
+            auto* number = task.as<NumericPayload>();
             if (number == nullptr) {
                 throw TypeMismatchError(c.id, "number", std::string(task.type_name()));
             }
-            number->value += c.by;
+            number->add(c.by);
             return Response {
                 .ok = true,
-                .text = std::to_string(number->value)
+                .text = std::to_string(number->value())
+            };
+        },
+        [&](const WorkerCommand& c) {
+            return store_.register_worker(std::string(c.name)) ?
+            Response {
+                .ok = true,
+                .text = "OK"
+            } :
+            Response {
+                .ok = true,
+                .text = "(there is already a worker)"
+            };
+        },
+        [&](const GoneCommand& c) {
+            if (!store_.remove_worker(c.name)) {
+                throw UnknownWorkerError(std::string(c.name));
+            }
+            return Response  {
+                .ok = true,
+                .text = "OK"
             };
         },
     }, command);

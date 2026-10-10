@@ -26,6 +26,11 @@ Response handle(ChatStore& store, std::string line) {
             .ok = false,
             .text = "ERR nickname in use: " + e.nick()
         };
+    } catch (const UnknownUserError& e) {
+        return Response {
+            .ok = false,
+            .text = "ERR no such user: " + e.nick()
+        };
     } catch (const TypeMismatchError& e) {
         return Response {
             .ok = false,

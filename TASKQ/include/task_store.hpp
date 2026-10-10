@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -13,6 +14,7 @@
 #include "errors.hpp"
 #include "state.hpp"
 #include "task.hpp"
+#include "worker.hpp"
 
 template <class T>
 class BasicTaskStore {
@@ -47,10 +49,35 @@ public:
         return tasks.front();
     }
 
-    [[nodiscard]] std::optional<T> lease(const std::string_view queue) {
+    bool register_worker(std::string name) {
+        if (workers_.find(name) != workers_.end()) {
+            return false;
+        }
+        auto worker = std::make_shared<Worker>(name);
+        workers_.emplace(std::move(name), std::move(worker));
+        return true;
+    }
+
+    bool remove_worker(const std::string_view name) {
+        const auto it = workers_.find(name);
+        if (it == workers_.end()) {
+            return false;
+        }
+        workers_.erase(it);
+        return true;
+    }
+
+    [[nodiscard]] std::size_t worker_count() const noexcept { return workers_.size(); }
+
+    [[nodiscard]] std::optional<T> lease(std::string_view queue, std::string_view worker_name) {
+        const auto worker = workers_.find(worker_name);
+        if (worker == workers_.end()) {
+            throw UnknownWorkerError(std::string(worker_name));
+        }
         for (T& task : require(queue)) {
             if (task.state() == State::Pending) {
                 task.set_state(State::Leased);
+                task.set_holder(worker->second);
                 return task;
             }
         }
@@ -63,6 +90,9 @@ public:
             throw InvalidTransitionError(id, task.state(), to);
         }
         task.set_state(to);
+        if (to != State::Leased) {
+            task.clear_holder();
+        }
     }
 
     [[nodiscard]] const T& find(const std::uint64_t id) const { return require_task(id); }
@@ -73,7 +103,7 @@ public:
     }
 
     [[nodiscard]] std::size_t queue_count() const noexcept { return queues_.size(); }
-    [[nodiscard]] std::size_t size(const std::string_view queue) const { return require(queue).size(); }
+    [[nodiscard]] std::size_t size(std::string_view queue) const { return require(queue).size(); }
     [[nodiscard]] bool empty() const noexcept { return queues_.empty(); }
 
     template <class F>
@@ -85,6 +115,7 @@ public:
 
     friend void swap(BasicTaskStore& a, BasicTaskStore& b) noexcept {
         a.queues_.swap(b.queues_);
+        a.workers_.swap(b.workers_);
     }
 
 private:
@@ -122,6 +153,7 @@ private:
     [[nodiscard]] const T& require_task(std::uint64_t id) const { return find_task(*this, id); }
 
     Map queues_;
+    std::map<std::string, std::shared_ptr<Worker>, std::less<>> workers_;
 };
 
 using TaskStore = BasicTaskStore<Task>;

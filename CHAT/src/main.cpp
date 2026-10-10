@@ -4,7 +4,9 @@
 #include <utility>
 
 #include "chat_store.hpp"
+#include "errors.hpp"
 #include "handler.hpp"
+#include "log.hpp"
 
 namespace {
     void print_help() {
@@ -17,30 +19,43 @@ namespace {
                   << "  /type #room N               message type\n"
                   << "  /react #room N [step]       change reaction counter\n"
                   << "  /nick name                  take a nickname\n"
+                  << "  /logout name                user logged out\n"
+                  << "  /invite #room name          add participant\n"
+                  << "  /who #room                  live participants\n"
                   << "  HELP / QUIT\n";
     }
 }  // namespace
 
 int main() {
-    ChatStore store;
-    std::cout << "CHAT, stage 3\n";
-    print_help();
+    try {
+        AppendOnlyLog log("chat.log");
+        std::cout << "CHAT, stage 4\n";
+        print_help();
 
-    std::string raw;
-    while (std::getline(std::cin, raw)) {
-        const std::string_view view = raw;
-        if (view == "QUIT") {
-            break;
+        std::string raw;
+        while (std::getline(std::cin, raw)) {
+            ChatStore store;
+            const std::string_view view = raw;
+            if (view == "QUIT") {
+                break;
+            }
+            if (view == "HELP") {
+                print_help();
+                continue;
+            }
+            std::string record = raw;
+            const auto [ok, text] = handle(store, std::move(raw));
+            if (ok) {
+                log.append(record);
+            }
+            std::cout << text;
+            if (text.empty() || text.back() != '\n') {
+                std::cout << '\n';
+            }
         }
-        if (view == "HELP") {
-            print_help();
-            continue;
-        }
-        const auto [ok, text] = handle(store, std::move(raw));
-        std::cout << text;
-        if (text.empty() || text.back() != '\n') {
-            std::cout << '\n';
-        }
+    } catch (const ChatError& e) {
+        std::cerr << e.what() << '\n';
+        return 1;
     }
     return 0;
 }

@@ -6,5 +6,3 @@
 #include "store.hpp"
 
 [[nodiscard]] Response handle(Store& store, std::string line);
-
-

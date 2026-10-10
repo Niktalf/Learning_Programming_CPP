@@ -38,7 +38,6 @@ TEST(OwningBuffer, SelfAssignmentIsSafe) {
 TEST(OwningBuffer, AssignmentReplacesContent) {
     OwningBuffer target{std::string("old")};
     const OwningBuffer source{std::string("new-content")};
-
     target = source;
 
     EXPECT_EQ(target.str(), std::string("new-content"));
@@ -52,9 +51,11 @@ TEST(OwningBuffer, MoveOperationsAreNoexcept) {
 
 TEST(OwningBuffer, EmptyBufferIsValid) {
     OwningBuffer empty;
+
     EXPECT_TRUE(empty.empty());
     EXPECT_EQ(empty.data(), nullptr);
 
     OwningBuffer copy{empty};
+
     EXPECT_TRUE(copy.empty());
 }

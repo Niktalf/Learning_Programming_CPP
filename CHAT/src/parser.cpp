@@ -19,12 +19,13 @@ namespace {
                 return false;
             }
         }
-    return true;
-}
+        return true;
+    }
 
-    [[noreturn]] void fail(std::string reason, std::string_view line) {
+    [[noreturn]] void fail(std::string reason, const std::string_view line) {
         throw ParseError(std::move(reason), std::string(line));
     }
+
     template <class T>
     [[nodiscard]] T to_number(const std::string_view token, const std::string_view line) {
         T value{};
@@ -134,7 +135,27 @@ Command parse(const InputLine& line) {
         const std::int64_t by = argc == 3 ? to_number<std::int64_t>(tokens[3], view) : 1;
         return ReactCommand {
             .room = tokens[1],
-            .index = index, .by = by
+            .index = index,
+            .by = by
+        };
+    }
+    if (is(verb, "/logout")) {
+        if (argc != 1) fail("/logout expects a name", view);
+        return LogoutCommand{
+            .nick = tokens[1]
+        };
+    }
+    if (is(verb, "/invite")) {
+        if (argc != 2 || !is_room(tokens[1])) fail("/invite expects #room name", view);
+        return InviteCommand{
+            .room = tokens[1],
+            .nick = tokens[2]
+        };
+    }
+    if (is(verb, "/who")) {
+        if (argc != 1 || !is_room(tokens[1])) fail("/who expects #room", view);
+        return WhoCommand{
+            .room = tokens[1]
         };
     }
     fail("unknown command: " + std::string(verb), view);

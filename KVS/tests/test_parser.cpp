@@ -7,14 +7,17 @@
 #include "errors.hpp"
 #include "parser.hpp"
 
+
 TEST(Parser, ParsesSet) {
     const InputLine line{"SET key value"};
     const auto command = parse(line);
 
     ASSERT_TRUE(std::holds_alternative<SetCommand>(command));
-    const auto& set = std::get<SetCommand>(command);
-    EXPECT_EQ(set.key, std::string_view("key"));
-    EXPECT_EQ(set.value, std::string_view("value"));
+
+    const auto& [key, value] = std::get<SetCommand>(command);
+
+    EXPECT_EQ(key, std::string_view("key"));
+    EXPECT_EQ(value, std::string_view("value"));
 }
 
 TEST(Parser, ParsesGetAndDel) {
@@ -40,6 +43,7 @@ TEST(Parser, IncrDefaultsToOne) {
 
 TEST(Parser, IncrRejectsTrailingGarbage) {
     const InputLine line{"INCR counter 12abc"};
+
     EXPECT_THROW((void)parse(line), ParseError);
 }
 
@@ -53,14 +57,15 @@ TEST(Parser, RejectsWrongArity) {
 
 TEST(Parser, RejectsUnknownVerb) {
     const InputLine line{"FLUSHALL"};
+
     EXPECT_THROW((void)parse(line), ParseError);
 }
 
 TEST(Parser, ResultBorrowsFromInputLine) {
     const InputLine line{"SET key value"};
     const auto command = parse(line);
-
     const auto& [key, value] = std::get<SetCommand>(command);
+
     EXPECT_EQ(key.data(), line.view().data() + 4);
 }
 
@@ -69,7 +74,9 @@ TEST(Parser, ParsesMsetPairs) {
     const auto command = parse(line);
 
     ASSERT_TRUE(std::holds_alternative<MsetCommand>(command));
+
     const auto& [pairs] = std::get<MsetCommand>(command);
+
     ASSERT_EQ(pairs.size(), 2u);
     EXPECT_EQ(pairs[1].first, std::string_view("b"));
     EXPECT_EQ(pairs[1].second, std::string_view("2"));

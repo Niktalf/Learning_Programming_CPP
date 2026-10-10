@@ -111,9 +111,22 @@ Command parse(const InputLine& line) {
         };
     }
     if (is(verb, "POLL")) {
-        if (argc != 1) fail("POLL expects a queue", view);
+        if (argc != 2) fail("POLL expects queue and worker", view);
         return PollCommand{
-            .queue = tokens[1]
+            .queue = tokens[1],
+            .worker = tokens[2]
+        };
+    }
+    if (is(verb, "WORKER")) {
+        if (argc != 1) fail("WORKER expects a name", view);
+        return WorkerCommand{
+            .name = tokens[1]
+        };
+    }
+    if (is(verb, "GONE")) {
+        if (argc != 1) fail("GONE expects a name", view);
+        return GoneCommand{
+            .name = tokens[1]
         };
     }
     if (is(verb, "ACK")) {

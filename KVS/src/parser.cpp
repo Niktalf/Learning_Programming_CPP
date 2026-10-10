@@ -4,7 +4,7 @@
 #include <optional>
 #include <string>
 
-#include <errors.hpp>
+#include "errors.hpp"
 #include "lexer.hpp"
 
 namespace {
@@ -49,32 +49,32 @@ Command parse(const InputLine& line) {
 
     if (equals_ignore_case(verb, "SET")) {
         if (argc != 2) fail("SET expects 2 arguments", view);
-        return SetCommand{
+        return SetCommand {
             .key = tokens[1],
             .value = tokens[2]
         };
     }
     if (equals_ignore_case(verb, "GET")) {
         if (argc != 1) fail("GET expects 1 argument", view);
-        return GetCommand{
+        return GetCommand {
             .key = tokens[1]
         };
     }
     if (equals_ignore_case(verb, "DEL")) {
         if (argc != 1) fail("DEL expects 1 argument", view);
-        return DelCommand{
+        return DelCommand {
             .key = tokens[1]
         };
     }
     if (equals_ignore_case(verb, "EXISTS")) {
         if (argc != 1) fail("EXISTS expects 1 argument", view);
-        return ExistsCommand{
+        return ExistsCommand {
             .key = tokens[1]
         };
     }
     if (equals_ignore_case(verb, "TYPE")) {
         if (argc != 1) fail("TYPE expects 1 argument", view);
-        return TypeCommand{
+        return TypeCommand {
             .key = tokens[1]
         };
     }
@@ -86,7 +86,7 @@ Command parse(const InputLine& line) {
             if (!parsed) fail("not an integer: " + std::string(tokens[2]), view);
             by = *parsed;
         }
-        return IncrCommand{
+        return IncrCommand {
             .key = tokens[1],
             .by = by
         };
@@ -101,6 +101,18 @@ Command parse(const InputLine& line) {
             mset.pairs.emplace_back(tokens[i], tokens[i + 1]);
         }
         return mset;
+    }
+    if (equals_ignore_case(verb, "RPUSH")) {
+        if (argc != 2) fail("RPUSH expects key and item", view);
+        return RPushCommand {
+            .key = tokens[1], .item = tokens[2]
+        };
+    }
+    if (equals_ignore_case(verb, "LLEN")) {
+        if (argc != 1) fail("LLEN expects 1 argument", view);
+        return LLenCommand {
+            .key = tokens[1]
+        };
     }
     fail("unknown command: " + std::string(verb), view);
 }
