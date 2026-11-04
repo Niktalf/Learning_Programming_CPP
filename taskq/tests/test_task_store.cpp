@@ -16,9 +16,12 @@ TEST(TaskStore, SubmitThenPeek) {
     TaskStore store;
     store.submit("build", Task(1, "make all", 5));
 
-    const Task* front = store.peek("build");
-    ASSERT_NE(front, nullptr);
-    EXPECT_EQ(front->id(), 1u);
+    // if с инициализацией: результат ограничен областью проверки.
+    if (const auto front = store.peek("build"); front) {
+        EXPECT_EQ(front->id(), 1u);
+    } else {
+        ADD_FAILURE() << "queue must have a task";
+    }
     EXPECT_EQ(store.size("build"), 1u);
 }
 
@@ -27,33 +30,34 @@ TEST(TaskStore, TakeRemovesTaskInFifoOrder) {
     store.submit("build", Task(1, "first", 0));
     store.submit("build", Task(2, "second", 0));
 
-    Task taken;
-    ASSERT_TRUE(store.take("build", taken));
-    EXPECT_EQ(taken.id(), 1u);
+    const auto first = store.take("build");
+    ASSERT_TRUE(first.has_value());
+    EXPECT_EQ(first->id(), 1u);
     EXPECT_EQ(store.size("build"), 1u);
 
-    ASSERT_TRUE(store.take("build", taken));
-    EXPECT_EQ(taken.id(), 2u);
-    EXPECT_FALSE(store.take("build", taken));
+    const auto second = store.take("build");
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(second->id(), 2u);
+    EXPECT_FALSE(store.take("build").has_value());
 }
 
-TEST(TaskStore, NullptrMeansTwoDifferentThings) {
+TEST(TaskStore, EmptyOptionalStillMeansTwoDifferentThings) {
     TaskStore store;
     store.create_queue("build");
 
     // Очередь есть, но пуста.
-    EXPECT_EQ(store.peek("build"), nullptr);
+    EXPECT_FALSE(store.peek("build").has_value());
     // Очереди нет вовсе.
-    EXPECT_EQ(store.peek("absent"), nullptr);
+    EXPECT_FALSE(store.peek("absent").has_value());
 
-    // Два разных случая неотличимы по возвращаемому значению — это и есть
-    // изъян интерфейса, который будет исправлен на этапах 2 и 3.
+    // Два разных случая неотличимы по возвращаемому значению: optional честнее
+    // сырого указателя, но причины отказа не несёт. Разведём их на этапе 3.
     EXPECT_EQ(store.queue_count(), 1u);
 }
 
 TEST(TaskStore, PeekingMissingQueueCreatesNothing) {
     TaskStore store;
-    EXPECT_EQ(store.peek("absent"), nullptr);
+    EXPECT_FALSE(store.peek("absent").has_value());
     // С operator[] на map здесь появилась бы пустая очередь, в которую
     // потом никто не заглянет.
     EXPECT_EQ(store.queue_count(), 0u);
@@ -65,17 +69,6 @@ TEST(TaskStore, CreateQueueReportsWhetherItWasNew) {
     EXPECT_TRUE(store.create_queue("build"));
     EXPECT_FALSE(store.create_queue("build"));
     EXPECT_EQ(store.queue_count(), 1u);
-}
-
-TEST(Spy, MoveDoesNotCopy) {
-    Tracked source{std::string("payload")};
-    Tracked::reset();
-
-    const Tracked target{std::move(source)};
-
-    EXPECT_EQ(Tracked::copies(), 0);
-    EXPECT_EQ(Tracked::moves(), 1);
-    EXPECT_EQ(target.str(), std::string("payload"));
 }
 
 TEST(TaskStore, SubmittingTemporaryDoesNotCopy) {
@@ -111,10 +104,10 @@ TEST(TaskStore, ExplicitMoveDoesNotCopy) {
 TEST(TaskStore, TakeMovesInsteadOfCopying) {
     BasicTaskStore<Tracked> store;
     store.submit("build", Tracked{std::string("payload")});
-    Tracked out;
     Tracked::reset();
 
-    ASSERT_TRUE(store.take("build", out));
+    const auto out = store.take("build");
+    ASSERT_TRUE(out.has_value());
 
     EXPECT_EQ(Tracked::copies(), 0);
     EXPECT_GE(Tracked::moves(), 1);
@@ -127,7 +120,7 @@ TEST(TaskStore, ForEachQueueVisitsQueuesInNameOrder) {
     store.submit("c", Task(3, "x"));
 
     std::vector<std::string> seen;
-    store.for_each_queue([&seen](const std::string& name, const TaskStore::Queue&) {
+    store.for_each_queue([&seen](const std::string& name, const taskq::Queue&) {
         seen.push_back(name);
     });
 
@@ -144,15 +137,26 @@ TEST(TaskStore, CaptureByReferenceAccumulatesButByValueDoesNot) {
     store.submit("b", Task(3, "x"));
 
     int by_reference = 0;
-    store.for_each_queue([&by_reference](const std::string&, const TaskStore::Queue& t) {
+    store.for_each_queue([&by_reference](const std::string&, const taskq::Queue& t) {
         by_reference += static_cast<int>(t.size());
     });
 
     int by_value = 0;
-    store.for_each_queue([by_value](const std::string&, const TaskStore::Queue& t) mutable {
+    store.for_each_queue([by_value](const std::string&, const taskq::Queue& t) mutable {
         by_value += static_cast<int>(t.size());
     });
 
     EXPECT_EQ(by_reference, 3);   // 2 + 1
     EXPECT_EQ(by_value, 0);       // менялась копия, наружу ничего не вышло
+}
+
+TEST(TaskStore, FindLocatesPendingTaskById) {
+    TaskStore store;
+    store.submit("build", Task(1, "a", 0));
+    store.submit("deploy", Task(2, "b", 0));
+
+    ASSERT_TRUE(store.find(2).has_value());
+    EXPECT_EQ(store.find(2)->get().to_string(), std::string("b"));
+    EXPECT_EQ(store.queue_of(2).value_or(""), std::string("deploy"));
+    EXPECT_FALSE(store.find(3).has_value());
 }

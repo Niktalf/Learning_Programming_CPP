@@ -2,49 +2,66 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <variant>
 
 namespace chat {
 
 using Timestamp = std::chrono::system_clock::time_point;
 
-// Правило нуля во плоти: ни одна из пяти специальных функций здесь не
-// объявлена. Компилятор сгенерирует все пять сам, и они будут корректны,
-// потому что все поля — строки и отметка времени — сами умеют корректно
-// копироваться, перемещаться и разрушаться.
-//
-// Конструкторы правилу нуля не мешают. Его ломает объявление деструктора
-// или любой из копирующих и перемещающих операций: объявленный деструктор
-// подавляет генерацию перемещающих, и там, где ожидалось перемещение
-// текста сообщения, начнётся копирование.
+// Содержимое сообщения теперь одно из трёх. std::variant, а не std::any:
+// набор альтернатив известен на этапе компиляции, поэтому std::visit проверяет
+// исчерпывающесть обработки, а значение хранится внутри объекта.
+struct TextBody     { std::string text; };
+struct SystemNotice { std::string text; };
+struct Reaction     { std::string emoji; std::int64_t count = 0; };
+
+inline bool operator==(const TextBody& a, const TextBody& b) { return a.text == b.text; }
+inline bool operator==(const SystemNotice& a, const SystemNotice& b) { return a.text == b.text; }
+inline bool operator==(const Reaction& a, const Reaction& b) {
+    return a.emoji == b.emoji && a.count == b.count;
+}
+
+using Body = std::variant<TextBody, SystemNotice, Reaction>;
+
+// Правило нуля по-прежнему в силе: ни одной специальной функции не объявлено.
 class Message {
 public:
     Message() = default;
 
-    Message(std::string author, std::string text, Timestamp at = Timestamp{})
-        : author_(std::move(author)), text_(std::move(text)), at_(at) {}
+    Message(std::string author, Body body, Timestamp at = Timestamp{})
+        : author_(std::move(author)), body_(std::move(body)), at_(at) {}
 
-    const std::string& author() const noexcept { return author_; }
-    const std::string& text() const noexcept { return text_; }
-    Timestamp at() const noexcept { return at_; }
-    std::size_t size() const noexcept { return text_.size(); }
+    Message(std::string author, std::string text, Timestamp at = Timestamp{})
+        : Message(std::move(author), Body{TextBody{std::move(text)}}, at) {}
+
+    [[nodiscard]] const std::string& author() const noexcept { return author_; }
+    [[nodiscard]] const Body& body() const noexcept { return body_; }
+    [[nodiscard]] Timestamp at() const noexcept { return at_; }
+
+    [[nodiscard]] std::string_view type_name() const noexcept;
+    [[nodiscard]] std::string to_string() const;
+    [[nodiscard]] std::size_t size() const noexcept;
+
+    // get_if, а не std::get: неверная альтернатива здесь штатная ситуация,
+    // а не исключительная. Исключения появятся на этапе 3.
+    template <class T> [[nodiscard]] const T* get_if() const noexcept { return std::get_if<T>(&body_); }
+    template <class T> [[nodiscard]] T* get_if() noexcept { return std::get_if<T>(&body_); }
+    template <class T> [[nodiscard]] bool holds() const noexcept { return std::holds_alternative<T>(body_); }
 
 private:
     std::string author_;
-    std::string text_;
+    Body body_;
     Timestamp at_ = Timestamp{};
 };
 
-// Сравнение написано руками: генерация операторов по умолчанию появится
-// только в C++20, вместе с оператором <=>.
-inline bool operator==(const Message& lhs, const Message& rhs) noexcept {
-    return lhs.author() == rhs.author() && lhs.text() == rhs.text() &&
-           lhs.at() == rhs.at();
+inline bool operator==(const Message& lhs, const Message& rhs) {
+    return lhs.author() == rhs.author() && lhs.body() == rhs.body() && lhs.at() == rhs.at();
 }
 
-inline bool operator!=(const Message& lhs, const Message& rhs) noexcept {
-    return !(lhs == rhs);
-}
+inline bool operator!=(const Message& lhs, const Message& rhs) { return !(lhs == rhs); }
 
 }  // namespace chat

@@ -1,55 +1,37 @@
 #include <iostream>
-#include <sstream>
 #include <string>
-#include <vector>
+#include <string_view>
+#include <utility>
 
-#include "taskq/owning_buffer.hpp"
-#include "taskq/task.hpp"
-#include "taskq/task_store.hpp"
+#include "taskq/executor.hpp"
+#include "taskq/parser.hpp"
 
 namespace {
 
-// Разбор строки самый прямолинейный: разбиение по пробелам с копированием,
-// причём у команды SUBMIT тело задачи — весь остаток строки. На этапе 2 он
-// будет переписан на std::string_view, и разницу в аллокациях мы измерим.
-std::vector<std::string> split(const std::string& line, std::size_t tail_at) {
-    std::vector<std::string> tokens;
-    std::istringstream stream(line);
-    std::string token;   // объявлен до цикла: в него читает operator>>
-    while (tokens.size() + 1 < tail_at && stream >> token) {
-        tokens.push_back(token);
-    }
-    std::string rest;
-    std::getline(stream, rest);
-    const std::size_t start = rest.find_first_not_of(' ');
-    if (start != std::string::npos) {
-        tokens.push_back(rest.substr(start));
-    }
-    return tokens;
-}
-
 void print_help() {
     std::cout << "Commands:\n"
-              << "  SUBMIT <queue> <body>   enqueue a task\n"
-              << "  PEEK <queue>            show the first task without taking it\n"
-              << "  TAKE <queue>            take the first task\n"
-              << "  QUEUES                  list queues\n"
-              << "  DEMO                    capture by reference vs by value\n"
+              << "  SUBMIT <queue> [prio=N] <body>   enqueue a task, priority 0..9;\n"
+              << "                                   quote queue names with spaces;\n"
+              << "                                   body num:42 is a number, bin:cafe bytes\n"
+              << "  POLL <queue>                     take the next task\n"
+              << "  ACK <id>                         mark a taken task done\n"
+              << "  FAIL <id>                        mark a taken task failed\n"
+              << "  STATUS <id>                      where the task is\n"
+              << "  TYPE <id>                        kind of the payload\n"
+              << "  BUMP <id> [n]                    add to a numeric payload\n"
+              << "  DEMO                             capture by reference vs by value\n"
               << "  HELP / QUIT\n";
 }
 
-// Демонстрация из постановки: один и тот же обход с двумя лямбдами.
-// Разница возникает потому, что for_each_queue принимает функтор по значению.
+// Демонстрация этапа 1: один и тот же обход с двумя лямбдами.
 void run_capture_demo(const taskq::TaskStore& store) {
     int by_reference = 0;
-    store.for_each_queue([&by_reference](const std::string&,
-                                         const taskq::TaskStore::Queue& tasks) {
+    store.for_each_queue([&by_reference](const std::string&, const taskq::Queue& tasks) {
         by_reference += static_cast<int>(tasks.size());
     });
 
     int by_value = 0;
-    store.for_each_queue([by_value](const std::string&,
-                                    const taskq::TaskStore::Queue& tasks) mutable {
+    store.for_each_queue([by_value](const std::string&, const taskq::Queue& tasks) mutable {
         by_value += static_cast<int>(tasks.size());
     });
 
@@ -61,50 +43,34 @@ void run_capture_demo(const taskq::TaskStore& store) {
 }  // namespace
 
 int main() {
-    const taskq::OwningBuffer banner(std::string("TASKQ, stage 1"));
-    std::cout << banner.str() << '\n';
+    std::cout << "TASKQ, stage 2\n";
     print_help();
 
-    taskq::TaskStore store;
-    taskq::TaskId next_id = 1;
-    std::string line;   // объявлена до цикла: в неё читает std::getline
-    while (std::getline(std::cin, line)) {
-        const std::vector<std::string> tokens = split(line, 3);
-        if (tokens.empty()) {
+    taskq::Service service;
+    std::string raw;   // объявлена до цикла: в неё читает std::getline
+    while (std::getline(std::cin, raw)) {
+        // Владелец строки живёт дольше результата разбора — в этом вся суть
+        // архитектурного исправления этапа.
+        const taskq::InputLine line{std::move(raw)};
+
+        const std::string_view view = line.view();
+        if (view.find_first_not_of(' ') == std::string_view::npos) {
             continue;
         }
-        const std::string& command = tokens.front();
-
-        if (command == "QUIT") {
+        if (view == "QUIT") {
             break;
-        } else if (command == "HELP") {
+        }
+        if (view == "HELP") {
             print_help();
-        } else if (command == "SUBMIT" && tokens.size() >= 3) {
-            store.submit(tokens[1], taskq::Task(next_id, tokens[2]));
-            std::cout << "OK id=" << next_id << '\n';
-            ++next_id;
-        } else if (command == "PEEK" && tokens.size() >= 2) {
-            if (const taskq::Task* const front = store.peek(tokens[1])) {
-                std::cout << "id=" << front->id() << ' ' << front->payload() << '\n';
-            } else {
-                // Здесь и виден изъян интерфейса: сказать, очередь пуста
-                // или её нет вовсе, мы не можем.
-                std::cout << "(nil: queue is empty or does not exist)\n";
-            }
-        } else if (command == "TAKE" && tokens.size() >= 2) {
-            taskq::Task taken;   // выходной параметр take: объявляется до вызова
-            if (store.take(tokens[1], taken)) {
-                std::cout << "id=" << taken.id() << ' ' << taken.payload() << '\n';
-            } else {
-                std::cout << "(nil: queue is empty or does not exist)\n";
-            }
-        } else if (command == "QUEUES") {
-            store.for_each_queue([](const std::string& name,
-                                    const taskq::TaskStore::Queue& tasks) {
-                std::cout << name << "  (" << tasks.size() << ")\n";
-            });
-        } else if (command == "DEMO") {
-            run_capture_demo(store);
+            continue;
+        }
+        if (view == "DEMO") {
+            run_capture_demo(service.store());
+            continue;
+        }
+
+        if (const auto command = taskq::parse(line); command) {
+            std::cout << service.execute(*command).text << '\n';
         } else {
             std::cout << "ERR unknown command or wrong arguments; HELP lists commands\n";
         }

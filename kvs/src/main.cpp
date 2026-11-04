@@ -1,40 +1,27 @@
 #include <iostream>
-#include <sstream>
 #include <string>
-#include <vector>
+#include <string_view>
+#include <utility>
 
-#include "kvs/owning_buffer.hpp"
+#include "kvs/executor.hpp"
+#include "kvs/parser.hpp"
 #include "kvs/store.hpp"
-#include "kvs/value.hpp"
 
 namespace {
 
-// Разбор строки на этом этапе самый прямолинейный: разбиение по пробелам
-// с копированием в std::string. На этапе 2 он будет переписан на
-// std::string_view, и разницу в количестве аллокаций мы измерим.
-std::vector<std::string> split(const std::string& line) {
-    std::vector<std::string> tokens;
-    std::istringstream stream(line);
-    std::string token;   // объявлен до цикла: в него читает operator>>
-    while (stream >> token) {
-        tokens.push_back(token);
-    }
-    return tokens;
-}
-
 void print_help() {
     std::cout << "Commands:\n"
-              << "  SET <key> <value>   store a value\n"
+              << "  SET <key> <value>   store a value (quote values with spaces)\n"
               << "  GET <key>           read a value\n"
               << "  DEL <key>           delete a key\n"
+              << "  EXISTS <key>        1 or 0\n"
+              << "  TYPE <key>          type of the value\n"
+              << "  INCR <key> [step]   increment an integer\n"
               << "  KEYS                list keys\n"
-              << "  COUNT               number of entries\n"
               << "  DEMO                capture by reference vs by value\n"
               << "  HELP / QUIT\n";
 }
 
-// Демонстрация из постановки: один и тот же обход с двумя лямбдами.
-// Разница возникает потому, что for_each принимает функтор по значению.
 void run_capture_demo(const kvs::Store& store) {
     int by_reference = 0;
     store.for_each([&by_reference](const std::string&, const kvs::Value& value) {
@@ -54,44 +41,41 @@ void run_capture_demo(const kvs::Store& store) {
 }  // namespace
 
 int main() {
-    // Единственное место, где используется учебный класс: показываем, что он
-    // работает, и на этом расстаёмся с ним.
-    const kvs::OwningBuffer banner(std::string("KVS, stage 1"));
-    std::cout << banner.str() << '\n';
+    std::cout << "KVS, stage 2\n";
     print_help();
 
     kvs::Store store;
-    std::string line;   // объявлена до цикла: в неё читает std::getline
-    while (std::getline(std::cin, line)) {
-        const std::vector<std::string> tokens = split(line);
-        if (tokens.empty()) {
+    std::string raw;   // объявлена до цикла: в неё читает std::getline
+    while (std::getline(std::cin, raw)) {
+        // Владелец строки живёт дольше результата разбора — в этом вся суть
+        // архитектурного исправления этапа. Команда смотрит внутрь line,
+        // и line не перемещается и не разрушается раньше времени.
+        const kvs::InputLine line{std::move(raw)};
+
+        const std::string_view view = line.view();
+        if (view.find_first_not_of(' ') == std::string_view::npos) {
+            continue;   // пустая строка — не ошибка, просто нечего делать
+        }
+        if (view == "QUIT") {
+            break;
+        }
+        if (view == "HELP") {
+            print_help();
             continue;
         }
-        const std::string& command = tokens.front();
-
-        if (command == "QUIT") {
-            break;
-        } else if (command == "HELP") {
-            print_help();
-        } else if (command == "SET" && tokens.size() >= 3) {
-            store.set(tokens[1], kvs::Value(tokens[2]));
-            std::cout << "OK\n";
-        } else if (command == "GET" && tokens.size() == 2) {
-            if (const kvs::Value* const found = store.get(tokens[1])) {
-                std::cout << found->str() << '\n';
-            } else {
-                std::cout << "(nil)\n";
-            }
-        } else if (command == "DEL" && tokens.size() == 2) {
-            std::cout << (store.del(tokens[1]) ? "OK" : "(nil)") << '\n';
-        } else if (command == "KEYS") {
+        if (view == "DEMO") {
+            run_capture_demo(store);
+            continue;
+        }
+        if (view == "KEYS") {
             store.for_each([](const std::string& key, const kvs::Value&) {
                 std::cout << key << '\n';
             });
-        } else if (command == "COUNT") {
-            std::cout << store.size() << '\n';
-        } else if (command == "DEMO") {
-            run_capture_demo(store);
+            continue;
+        }
+
+        if (const auto command = kvs::parse(line); command) {
+            std::cout << kvs::execute(store, *command).text << '\n';
         } else {
             std::cout << "ERR unknown command or wrong arguments; HELP lists commands\n";
         }

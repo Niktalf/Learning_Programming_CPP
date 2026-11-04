@@ -1,8 +1,11 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <map>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "kvs/value.hpp"
@@ -17,26 +20,33 @@ template <class V>
 class BasicStore {
 public:
     void set(std::string key, V value) {
-        // insert_or_assign появится в C++17; пока обходимся find и вставкой.
-        typename Map::iterator it = data_.find(key);
-        if (it != data_.end()) {
-            it->second = std::move(value);
-        } else {
-            data_.insert(std::make_pair(std::move(key), std::move(value)));
+        // insert_or_assign из C++17: одна операция вместо поиска и вставки.
+        data_.insert_or_assign(std::move(key), std::move(value));
+    }
+
+    // Этап 2: вместо сырого указателя — std::optional. Отсутствие значения
+    // теперь выражено в типе, и вызывающий не может забыть о проверке:
+    // разыменование пустого optional не проходит молча, как обращение
+    // по nullptr.
+    //
+    // Возвращается копия, а не ссылка: std::optional<T&> стандартом не
+    // предусмотрен. Для небольшого значения копия приемлема; там, где она
+    // была бы дорогой, пришлось бы брать reference_wrapper или указатель,
+    // и это стоит помнить как ограничение, а не считать optional бесплатным.
+    [[nodiscard]] std::optional<V> get(std::string_view key) const {
+        const auto it = data_.find(key);
+        if (it == data_.end()) {
+            return std::nullopt;
         }
+        return it->second;
     }
 
-    // Возврат сырого указателя на этом этапе намеренный: nullptr означает
-    // «ключа нет». Интерфейс неудобен — вызывающий обязан помнить о проверке,
-    // а тип ничего об этом не сообщает. На этапе 2 он заменится на
-    // std::optional, и разницу стоит увидеть своими глазами.
-    const V* get(const std::string& key) const noexcept {
-        typename Map::const_iterator it = data_.find(key);
-        return it == data_.end() ? nullptr : &it->second;
+    [[nodiscard]] bool contains(std::string_view key) const noexcept {
+        return data_.find(key) != data_.end();
     }
 
-    bool del(const std::string& key) {
-        typename Map::iterator it = data_.find(key);
+    bool del(std::string_view key) {
+        const auto it = data_.find(key);
         if (it == data_.end()) {
             return false;
         }
@@ -44,24 +54,26 @@ public:
         return true;
     }
 
-    std::size_t size() const noexcept { return data_.size(); }
-    bool empty() const noexcept { return data_.empty(); }
+    [[nodiscard]] std::size_t size() const noexcept { return data_.size(); }
+    [[nodiscard]] bool empty() const noexcept { return data_.empty(); }
 
     // Функтор принимается по значению — как это делают алгоритмы стандартной
     // библиотеки. Именно поэтому лямбда с захватом по значению и mutable не
     // выносит изменения наружу: меняется копия.
     //
-    // Разложение пары на имена (structured bindings) появится в C++17, пока
-    // обращаемся к first и second.
+    // Structured bindings из C++17: пара раскладывается на имена, а не
+    // читается через first и second.
     template <class F>
     void for_each(F fn) const {
-        for (const auto& entry : data_) {
-            fn(entry.first, entry.second);
+        for (const auto& [key, value] : data_) {
+            fn(key, value);
         }
     }
 
 private:
-    using Map = std::map<std::string, V>;
+    // std::less<> включает разнородный поиск: методы принимают string_view
+    // и не создают временную строку на каждый вызов.
+    using Map = std::map<std::string, V, std::less<>>;
     Map data_;
 };
 

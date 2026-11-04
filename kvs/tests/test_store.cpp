@@ -14,20 +14,23 @@ using kvs::testing::Tracked;
 
 TEST(Store, SetGetDelete) {
     Store store;
-    store.set("greeting", Value{std::string("hello")});
+    store.set("greeting", Value(std::string("hello")));
 
-    const Value* const found = store.get("greeting");
-    ASSERT_NE(found, nullptr);
-    EXPECT_EQ(found->str(), std::string("hello"));
+    // if с инициализацией: переменная ограничена областью проверки.
+    if (const auto found = store.get("greeting"); found) {
+        EXPECT_EQ(found->to_string(), std::string("hello"));
+    } else {
+        ADD_FAILURE() << "key must be present";
+    }
 
     EXPECT_TRUE(store.del("greeting"));
-    EXPECT_EQ(store.get("greeting"), nullptr);
+    EXPECT_FALSE(store.get("greeting").has_value());
     EXPECT_FALSE(store.del("greeting"));
 }
 
 TEST(Store, MissingKeyDoesNotCreateEntry) {
     Store store;
-    EXPECT_EQ(store.get("absent"), nullptr);
+    EXPECT_FALSE(store.get("absent").has_value());
     // Обращение к отсутствующему ключу не должно порождать запись.
     // С operator[] на map здесь появился бы пустой элемент.
     EXPECT_EQ(store.size(), 0u);
@@ -36,11 +39,11 @@ TEST(Store, MissingKeyDoesNotCreateEntry) {
 
 TEST(Store, SetOverwritesExistingKey) {
     Store store;
-    store.set("k", Value{std::string("first")});
-    store.set("k", Value{std::string("second")});
+    store.set("k", Value(std::string("first")));
+    store.set("k", Value(std::string("second")));
 
-    ASSERT_NE(store.get("k"), nullptr);
-    EXPECT_EQ(store.get("k")->str(), std::string("second"));
+    ASSERT_TRUE(store.get("k").has_value());
+    EXPECT_EQ(store.get("k")->to_string(), std::string("second"));
     EXPECT_EQ(store.size(), 1u);
 }
 
@@ -87,9 +90,9 @@ TEST(Store, ExplicitMoveDoesNotCopy) {
 
 TEST(Store, ForEachVisitsEveryEntryInKeyOrder) {
     Store store;
-    store.set("b", Value{std::string("2")});
-    store.set("a", Value{std::string("1")});
-    store.set("c", Value{std::string("3")});
+    store.set("b", Value(std::string("2")));
+    store.set("a", Value(std::string("1")));
+    store.set("c", Value(std::string("3")));
 
     std::vector<std::string> seen;
     store.for_each([&seen](const std::string& key, const Value&) {
@@ -104,8 +107,8 @@ TEST(Store, ForEachVisitsEveryEntryInKeyOrder) {
 
 TEST(Store, CaptureByReferenceAccumulatesButByValueDoesNot) {
     Store store;
-    store.set("a", Value{std::string("1")});
-    store.set("b", Value{std::string("22")});
+    store.set("a", Value(std::string("1")));
+    store.set("b", Value(std::string("22")));
 
     int by_reference = 0;
     store.for_each([&by_reference](const std::string&, const Value& v) {

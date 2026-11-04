@@ -17,16 +17,20 @@ TEST(ChatStore, PostThenReadHistory) {
     store.post("#general", Message("alice", "hello"));
     store.post("#general", Message("bob", "hi"));
 
-    const ChatStore::History* history = store.history("#general");
-    ASSERT_NE(history, nullptr);
-    ASSERT_EQ(history->size(), 2u);
-    EXPECT_EQ((*history)[0].author(), std::string("alice"));
-    EXPECT_EQ((*history)[1].text(), std::string("hi"));
+    // if с инициализацией: результат ограничен областью проверки.
+    if (const auto history = store.history("#general"); history) {
+        const auto& messages = history->get();
+        ASSERT_EQ(messages.size(), 2u);
+        EXPECT_EQ(messages[0].author(), std::string("alice"));
+        EXPECT_EQ(messages[1].to_string(), std::string("hi"));
+    } else {
+        ADD_FAILURE() << "room must exist";
+    }
 }
 
-TEST(ChatStore, MissingRoomReadsAsNullptrAndCreatesNothing) {
+TEST(ChatStore, MissingRoomReadsAsEmptyAndCreatesNothing) {
     ChatStore store;
-    EXPECT_EQ(store.history("#absent"), nullptr);
+    EXPECT_FALSE(store.history("#absent").has_value());
     // Чтение истории несуществующей комнаты не должно её создавать.
     // С operator[] на map здесь появилась бы пустая комната.
     EXPECT_EQ(store.room_count(), 0u);
@@ -40,24 +44,37 @@ TEST(ChatStore, CreateRoomReportsWhetherItWasNew) {
     EXPECT_EQ(store.room_count(), 1u);
 }
 
-TEST(ChatStore, DropRoomRemovesHistory) {
+TEST(ChatStore, JoinAndLeaveTrackMembers) {
+    ChatStore store;
+    EXPECT_TRUE(store.join("#general", "alice"));
+    EXPECT_FALSE(store.join("#general", "alice"));   // повторный вход ничего не меняет
+    EXPECT_TRUE(store.join("#general", "bob"));
+    EXPECT_TRUE(store.is_member("#general", "bob"));
+
+    EXPECT_TRUE(store.leave("#general", "bob"));
+    EXPECT_FALSE(store.leave("#general", "bob"));
+    EXPECT_FALSE(store.leave("#absent", "bob"));
+
+    const auto members = store.members("#general");
+    ASSERT_TRUE(members.has_value());
+    EXPECT_EQ(members->get().size(), 1u);
+}
+
+TEST(ChatStore, MessageAtGivesOptionalReferenceInsteadOfPointer) {
     ChatStore store;
     store.post("#general", Message("alice", "hello"));
 
-    EXPECT_TRUE(store.drop_room("#general"));
-    EXPECT_EQ(store.history("#general"), nullptr);
-    EXPECT_FALSE(store.drop_room("#general"));
+    EXPECT_TRUE(store.message_at("#general", 0).has_value());
+    EXPECT_FALSE(store.message_at("#general", 1).has_value());
+    EXPECT_FALSE(store.message_at("#absent", 0).has_value());
 }
 
-TEST(Spy, MoveDoesNotCopy) {
-    Tracked source{std::string("payload")};
-    Tracked::reset();
-
-    const Tracked target{std::move(source)};
-
-    EXPECT_EQ(Tracked::copies(), 0);
-    EXPECT_EQ(Tracked::moves(), 1);
-    EXPECT_EQ(target.str(), std::string("payload"));
+TEST(ChatStore, TopicBelongsToExistingRoom) {
+    ChatStore store;
+    EXPECT_FALSE(store.set_topic("#general", "x"));
+    store.create_room("#general");
+    EXPECT_TRUE(store.set_topic("#general", "курс по C++"));
+    EXPECT_EQ(store.topic("#general").value_or(""), std::string("курс по C++"));
 }
 
 TEST(ChatStore, PostingTemporaryDoesNotCopy) {
@@ -97,7 +114,7 @@ TEST(ChatStore, ForEachRoomVisitsRoomsInNameOrder) {
     store.post("#c", Message("u", "3"));
 
     std::vector<std::string> seen;
-    store.for_each_room([&seen](const std::string& room, const ChatStore::History&) {
+    store.for_each_room([&seen](const std::string& room, const chat::History&) {
         seen.push_back(room);
     });
 
@@ -114,12 +131,12 @@ TEST(ChatStore, CaptureByReferenceAccumulatesButByValueDoesNot) {
     store.post("#b", Message("u", "3"));
 
     int by_reference = 0;
-    store.for_each_room([&by_reference](const std::string&, const ChatStore::History& h) {
+    store.for_each_room([&by_reference](const std::string&, const chat::History& h) {
         by_reference += static_cast<int>(h.size());
     });
 
     int by_value = 0;
-    store.for_each_room([by_value](const std::string&, const ChatStore::History& h) mutable {
+    store.for_each_room([by_value](const std::string&, const chat::History& h) mutable {
         by_value += static_cast<int>(h.size());
     });
 

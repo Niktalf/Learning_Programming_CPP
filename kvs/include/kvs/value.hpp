@@ -1,38 +1,61 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <variant>
 
 namespace kvs {
 
-// Правило нуля во плоти: ни одна из пяти специальных функций здесь не
-// объявлена. Компилятор сгенерирует все пять сам, и они будут корректны,
-// потому что единственное поле — std::string — само умеет корректно
-// копироваться, перемещаться и разрушаться.
-//
-// Конструкторы правилу нуля не мешают. Его ломает объявление деструктора
-// или любой из копирующих и перемещающих операций: объявленный деструктор
-// подавляет генерацию перемещающих, и там, где ожидалось перемещение,
-// начнётся копирование.
+// Значение теперь может быть строкой, целым или числом с плавающей точкой.
+// std::variant, а не std::any: набор альтернатив известен на этапе компиляции,
+// поэтому std::visit проверяет исчерпывающесть обработки, а значение хранится
+// внутри объекта, без обязательной аллокации в куче.
+using ValueData = std::variant<std::string, std::int64_t, double>;
+
+// Правило нуля по-прежнему в силе: ни одной специальной функции не объявлено.
+// variant копируется и перемещается ровно так же, как хранимая альтернатива.
 class Value {
 public:
     Value() = default;
 
     explicit Value(std::string data) noexcept : data_(std::move(data)) {}
+    explicit Value(std::string_view data) : data_(std::string(data)) {}
+    explicit Value(std::int64_t data) noexcept : data_(data) {}
+    explicit Value(double data) noexcept : data_(data) {}
 
-    const std::string& str() const noexcept { return data_; }
-    std::size_t size() const noexcept { return data_.size(); }
-    bool empty() const noexcept { return data_.empty(); }
+    [[nodiscard]] const ValueData& data() const noexcept { return data_; }
+
+    // Имя текущей альтернативы для команды TYPE. switch по index() пришлось
+    // бы править при добавлении альтернативы, и компилятор бы об этом
+    // не сказал. Здесь исчерпывающесть проверяется на этапе компиляции.
+    [[nodiscard]] std::string_view type_name() const noexcept;
+
+    [[nodiscard]] std::string to_string() const;
+    [[nodiscard]] std::size_t size() const noexcept;
+
+    template <class T>
+    [[nodiscard]] bool holds() const noexcept {
+        return std::holds_alternative<T>(data_);
+    }
+
+    // Возвращает указатель, а не бросает: на этом этапе исключений в проекте
+    // ещё нет, они появятся на этапе 3. std::get здесь применять нельзя —
+    // bad_variant_access улетел бы наружу и уронил обработку команды.
+    template <class T>
+    [[nodiscard]] const T* get_if() const noexcept {
+        return std::get_if<T>(&data_);
+    }
 
 private:
-    std::string data_;
+    ValueData data_;
 };
 
-// Сравнение написано руками: генерация операторов по умолчанию появится
-// только в C++20, вместе с оператором <=>. Пока пишем сами и следим, чтобы
-// != был выражен через ==, а не продублирован.
+// Сравнение по-прежнему написано руками: генерация операторов по умолчанию
+// появится только в C++20.
 inline bool operator==(const Value& lhs, const Value& rhs) noexcept {
-    return lhs.str() == rhs.str();
+    return lhs.data() == rhs.data();
 }
 
 inline bool operator!=(const Value& lhs, const Value& rhs) noexcept {
