@@ -3,66 +3,104 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <variant>
+
+#include "taskq/payload.hpp"
 
 namespace taskq {
 
 using TaskId = std::uint64_t;
 using Timestamp = std::chrono::system_clock::time_point;
 
-// Тело задачи теперь одно из трёх. std::variant, а не std::any: набор
-// альтернатив известен на этапе компиляции, поэтому std::visit проверяет
-// исчерпывающесть обработки, а значение хранится внутри объекта.
-struct TextPayload    { std::string command; };
-struct NumericPayload { std::int64_t value = 0; };
-struct BinaryPayload  { std::string bytes; };
-
-inline bool operator==(const TextPayload& a, const TextPayload& b) { return a.command == b.command; }
-inline bool operator==(const NumericPayload& a, const NumericPayload& b) { return a.value == b.value; }
-inline bool operator==(const BinaryPayload& a, const BinaryPayload& b) { return a.bytes == b.bytes; }
-
-using Payload = std::variant<TextPayload, NumericPayload, BinaryPayload>;
-
-// Правило нуля по-прежнему в силе.
+// Задача с семантикой значения поверх полиморфного тела.
+//
+// Тело лежит в std::unique_ptr<IPayload>: владелец один — задача. Снаружи
+// задача по-прежнему копируемый тип, как на этапах 1–3, и поэтому хранилище
+// и сильная гарантия пакетной постановки этапа 3 не изменились: копия
+// очереди копирует задачи, а задача копирует тело через clone. Тесты этапа 3
+// прошли без правок; Guarantee.BatchWithPolymorphicPayloads проверяет то же
+// на настоящих задачах с бросающим clone.
+//
+// Правило нуля здесь перестаёт работать: поле unique_ptr не копируется, и
+// копирующие операции приходится написать самим. Перемещение и деструктор
+// по-прежнему генерирует компилятор.
 class Task {
 public:
-    Task() = default;
+    // Пустая задача без тела — только место, куда задачу потом переместят
+    // (так поступает POLL). noexcept, без выделения памяти.
+    Task() noexcept = default;
 
-    Task(TaskId id, Payload payload, int priority = 0, Timestamp at = Timestamp{})
+    Task(TaskId id, PayloadPtr payload, int priority = 0, Timestamp at = Timestamp{}) noexcept
         : id_(id), payload_(std::move(payload)), priority_(priority), at_(at) {}
 
     Task(TaskId id, std::string command, int priority = 0, Timestamp at = Timestamp{})
-        : Task(id, Payload{TextPayload{std::move(command)}}, priority, at) {}
+        : Task(id, std::make_unique<TextPayload>(std::move(command)), priority, at) {}
+
+    Task(const Task& other)
+        : id_(other.id_),
+          payload_(other.payload_ ? other.payload_->clone() : nullptr),
+          priority_(other.priority_),
+          at_(other.at_) {}
+
+    // copy-and-swap: копия снимается до того, как затрагивается *this, и
+    // бросок clone оставляет задачу прежней.
+    Task& operator=(const Task& other) {
+        Task copy(other);
+        swap(*this, copy);
+        return *this;
+    }
+
+    Task(Task&&) noexcept = default;
+    Task& operator=(Task&&) noexcept = default;
+    ~Task() = default;
+
+    friend void swap(Task& a, Task& b) noexcept {
+        using std::swap;
+        swap(a.id_, b.id_);
+        a.payload_.swap(b.payload_);
+        swap(a.priority_, b.priority_);
+        swap(a.at_, b.at_);
+    }
 
     [[nodiscard]] TaskId id() const noexcept { return id_; }
-    [[nodiscard]] const Payload& payload() const noexcept { return payload_; }
     [[nodiscard]] int priority() const noexcept { return priority_; }
     [[nodiscard]] Timestamp created_at() const noexcept { return at_; }
 
-    [[nodiscard]] std::string_view type_name() const noexcept;
-    [[nodiscard]] std::string to_string() const;
-    [[nodiscard]] std::size_t size() const noexcept;
+    // Задача без тела — пустая или перемещённая — отвечает «none», 0 и
+    // пустой строкой: методы без предусловий обязаны работать и на ней.
+    [[nodiscard]] std::string_view type_name() const noexcept {
+        return payload_ ? payload_->type_name() : std::string_view("none");
+    }
+    [[nodiscard]] std::string to_string() const { return payload_ ? payload_->to_string() : std::string(); }
+    [[nodiscard]] std::size_t size() const noexcept { return payload_ ? payload_->size() : 0; }
 
-    // get_if, а не std::get: неверная альтернатива здесь штатная ситуация.
-    template <class T> [[nodiscard]] const T* get_if() const noexcept { return std::get_if<T>(&payload_); }
-    template <class T> [[nodiscard]] T* get_if() noexcept { return std::get_if<T>(&payload_); }
-    template <class T> [[nodiscard]] bool holds() const noexcept { return std::holds_alternative<T>(payload_); }
+    // Доступ к конкретному виду тела: указатель или nullptr. Роль, которую на
+    // этапе 2 играл std::get_if у variant; внутри теперь dynamic_cast.
+    template <class T>
+    [[nodiscard]] const T* as() const noexcept {
+        return dynamic_cast<const T*>(payload_.get());
+    }
+
+    template <class T>
+    [[nodiscard]] T* as() noexcept {
+        return dynamic_cast<T*>(payload_.get());
+    }
+
+    friend bool operator==(const Task& a, const Task& b) noexcept {
+        const bool same_payload = (!a.payload_ && !b.payload_) ||
+                                  (a.payload_ && b.payload_ && a.payload_->equals(*b.payload_));
+        return a.id_ == b.id_ && same_payload && a.priority_ == b.priority_ && a.at_ == b.at_;
+    }
+    friend bool operator!=(const Task& a, const Task& b) noexcept { return !(a == b); }
 
 private:
     TaskId id_ = 0;
-    Payload payload_;
+    PayloadPtr payload_;
     int priority_ = 0;
     Timestamp at_ = Timestamp{};
 };
-
-inline bool operator==(const Task& lhs, const Task& rhs) {
-    return lhs.id() == rhs.id() && lhs.payload() == rhs.payload() &&
-           lhs.priority() == rhs.priority() && lhs.created_at() == rhs.created_at();
-}
-
-inline bool operator!=(const Task& lhs, const Task& rhs) { return !(lhs == rhs); }
 
 }  // namespace taskq

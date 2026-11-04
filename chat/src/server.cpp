@@ -1,9 +1,10 @@
-#include "chat/handler.hpp"
+#include "chat/server.hpp"
 
 #include <exception>
 #include <new>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "chat/errors.hpp"
@@ -29,6 +30,8 @@ namespace {
         return "you are not in " + e.room() + " (use /join)";
     } catch (const NicknameTakenError& e) {
         return "nickname in use: " + e.nick();
+    } catch (const UnknownUserError& e) {
+        return "no such user: " + e.nick();
     } catch (const MessageNotFoundError& e) {
         return "no message " + std::to_string(e.index()) + " in " + e.room();
     } catch (const TypeMismatchError& e) {
@@ -46,21 +49,54 @@ namespace {
     }
 }
 
+
+// Запись журнала: комнаты через запятую, автор и текст через табуляцию.
+// Табуляции в тексте быть не может — разбор отвергает управляющие символы.
+[[nodiscard]] std::string record_of(const std::string& author, const MsgCommand& msg) {
+    std::string record;
+    char separator = '\0';
+    for (const std::string_view room : msg.rooms) {
+        if (separator != '\0') {
+            record += separator;
+        }
+        record += room;
+        separator = ',';
+    }
+    record += '\t';
+    record += author;
+    record += '\t';
+    record += msg.text;
+    return record;
+}
+
 }  // namespace
 
-Response handle(ChatStore& store, Session& session, std::string line) {
+Session Server::login(std::string nick) {
+    store_.register_user(nick);   // занятый ник — NicknameTakenError
+    return Session{std::move(nick)};
+}
+
+void Server::logout(const Session& session) {
+    store_.release_user(session.nick);
+}
+
+Response Server::handle(Session& session, std::string line) {
     const InputLine input{std::move(line)};
     try {
-        return execute(store, session, parse(input));
+        const Command command = parse(input);
+        Response response = execute(store_, session, command);
+        // В журнал — только успешно отправленные сообщения. Если запись не
+        // удалась, сообщение уже в истории, а клиент получит ошибку; журнал
+        // до исполнения (write-ahead) этого не допускает, но требует отката.
+        // Курс вернётся к этому на этапе 17.
+        if (const auto* const msg = std::get_if<MsgCommand>(&command); msg && log_) {
+            log_->append(record_of(session.nick, *msg));
+        }
+        return response;
     } catch (...) {
         // catch (...) допустим только здесь, на самой внешней границе, и
-        // только с осмысленным ответом. Проглотить молча было бы хуже, чем
-        // упасть.
-        //
-        // Ответ строится по исходной причине, а цепочка контекста, если она
-        // есть, приписывается в скобках: «ERR no such room: #x (while
-        // executing /who #x)». Клиенту видно и что случилось, и на какой
-        // команде.
+        // только с осмысленным ответом. Ответ строится по исходной причине,
+        // цепочка контекста приписывается в скобках.
         const std::exception_ptr error = std::current_exception();
         std::string text = "ERR " + reason_of(root_cause(error));
         for (const std::string& step : context_of(error)) {

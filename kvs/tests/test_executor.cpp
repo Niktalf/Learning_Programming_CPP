@@ -81,7 +81,7 @@ TEST(Executor, IncrOnStringThrowsTypeMismatch) {
     Store store;
     run(store, "SET s text");
     // Этап 2 возвращал здесь флаг. Теперь это исключение с контекстом в полях,
-    // и ловит его не исполнитель, а граница handle — см. test_handler.cpp.
+    // и ловит его не исполнитель, а граница Server::handle — см. test_server.cpp.
     const std::exception_ptr root = root_if<kvs::TypeMismatchError>(store, "INCR s");
     ASSERT_TRUE(root);
     try {

@@ -59,6 +59,17 @@ private:
     TaskId id_;
 };
 
+// Воркер с таким именем не зарегистрирован. Этап 4. На этапе 16 — код 404.
+class UnknownWorkerError : public TaskQError {
+public:
+    explicit UnknownWorkerError(std::string worker);
+
+    [[nodiscard]] const std::string& worker() const noexcept { return worker_; }
+
+private:
+    std::string worker_;
+};
+
 // Переход запрещён автоматом: ACK ожидающей задачи, повторный ACK. Задача
 // существует, но сделать с ней это нельзя — поэтому 409, а не 404, и клиент
 // обязан уметь их различать.

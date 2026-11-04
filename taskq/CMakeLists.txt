@@ -1,9 +1,10 @@
 cmake_minimum_required(VERSION 3.28)
 project(taskq LANGUAGES CXX)
 
-# Этап 3 идёт под C++17: исключения, гарантии безопасности и noexcept
-# укладываются в семнадцатый стандарт. std::expected появился только в C++23,
-# поэтому второй путь обработки ошибок построен на собственном Result.
+# Этапы 2–4 идут под C++17. На этапе 3 разбираются исключения, на этапе 4 —
+# RAII и умные указатели; всё это целиком укладывается в семнадцатый стандарт.
+# std::expected появился только в C++23, поэтому второй путь обработки ошибок
+# этапа 3 построен на собственном Result.
 #
 # Стандарт поднимается вместе с курсом: этап 1 был под 14, этапы 3–4 остаются
 # на 17, с этапа 5 — C++23. Так компилятор сам не даёт применить то, чего ещё
@@ -26,7 +27,9 @@ FetchContent_Declare(googletest
 FetchContent_MakeAvailable(googletest)
 
 add_library(taskq_core
+        src/payload.cpp
         src/task.cpp
+        src/log.cpp
         src/lexer.cpp
         src/parser.cpp
         src/executor.cpp
@@ -56,8 +59,12 @@ add_executable(taskq_tests
         tests/test_guarantee.cpp
         tests/test_handler.cpp
         tests/test_result.cpp
-        tests/test_fuzz.cpp)
-target_include_directories(taskq_tests PRIVATE tests)
+        tests/test_fuzz.cpp
+        tests/test_payload.cpp
+        tests/test_workers.cpp
+        tests/test_log.cpp
+        tests/test_cycle.cpp)
+target_include_directories(taskq_tests PRIVATE tests tools)
 target_link_libraries(taskq_tests PRIVATE taskq_core taskq_warnings GTest::gtest_main)
 
 # Звёздочка этапа 1: порядок конструкторов при добавлении в std::vector.
@@ -87,3 +94,17 @@ target_link_libraries(taskq_error_cost PRIVATE taskq_core taskq_warnings)
 # Учебная демонстрация висячего представления. В обычную сборку не входит.
 add_executable(taskq_dangling_demo EXCLUDE_FROM_ALL tests/dangling_demo.cpp)
 target_link_libraries(taskq_dangling_demo PRIVATE taskq_core taskq_warnings)
+
+# Звёздочка этапа 4: цикл из shared_ptr. taskq_cycle_demo — исправленный
+# вариант, задача держит воркера через weak_ptr; входит в обычную сборку.
+# taskq_cycle_leak — тот же код под флагом TASKQ_LEAKING_CYCLE, задача держит
+# воркера через shared_ptr. В обычную сборку не входит: программа намеренно
+# теряет память. Запускать под санитайзером адресов, он покажет утечку.
+add_executable(taskq_cycle_demo tools/cycle_demo.cpp)
+target_include_directories(taskq_cycle_demo PRIVATE tools)
+target_link_libraries(taskq_cycle_demo PRIVATE taskq_warnings)
+
+add_executable(taskq_cycle_leak EXCLUDE_FROM_ALL tools/cycle_demo.cpp)
+target_include_directories(taskq_cycle_leak PRIVATE tools)
+target_compile_definitions(taskq_cycle_leak PRIVATE TASKQ_LEAKING_CYCLE)
+target_link_libraries(taskq_cycle_leak PRIVATE taskq_warnings)

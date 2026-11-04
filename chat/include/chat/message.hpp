@@ -3,66 +3,125 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <variant>
 
 namespace chat {
 
 using Timestamp = std::chrono::system_clock::time_point;
 
-// Содержимое сообщения теперь одно из трёх. std::variant, а не std::any:
-// набор альтернатив известен на этапе компиляции, поэтому std::visit проверяет
-// исчерпывающесть обработки, а значение хранится внутри объекта.
-struct TextBody     { std::string text; };
-struct SystemNotice { std::string text; };
-struct Reaction     { std::string emoji; std::int64_t count = 0; };
-
-inline bool operator==(const TextBody& a, const TextBody& b) { return a.text == b.text; }
-inline bool operator==(const SystemNotice& a, const SystemNotice& b) { return a.text == b.text; }
-inline bool operator==(const Reaction& a, const Reaction& b) {
-    return a.emoji == b.emoji && a.count == b.count;
-}
-
-using Body = std::variant<TextBody, SystemNotice, Reaction>;
-
-// Правило нуля по-прежнему в силе: ни одной специальной функции не объявлено.
-class Message {
+// Этап 4: сообщение — иерархия классов вместо std::variant, и комната хранит
+// std::vector<std::unique_ptr<IMessage>>.
+//
+// Деструктор виртуальный, и это обязательно. Сообщения удаляются через
+// std::unique_ptr<IMessage>, то есть через указатель на базовый класс. Без
+// virtual это неопределённое поведение: вызовется только ~IMessage, а
+// деструктор наследника — с текстом сообщения — не выполнится. unique_ptr
+// не спасает: он вызывает delete по статическому типу.
+//
+// Общие для всех сообщений поля — автор и время — живут в базе. Это не
+// интерфейс в строгом смысле, а абстрактная база с данными; так проще, чем
+// повторять одни и те же поля в трёх наследниках.
+class IMessage {
 public:
-    Message() = default;
-
-    Message(std::string author, Body body, Timestamp at = Timestamp{})
-        : author_(std::move(author)), body_(std::move(body)), at_(at) {}
-
-    Message(std::string author, std::string text, Timestamp at = Timestamp{})
-        : Message(std::move(author), Body{TextBody{std::move(text)}}, at) {}
+    virtual ~IMessage() = default;
 
     [[nodiscard]] const std::string& author() const noexcept { return author_; }
-    [[nodiscard]] const Body& body() const noexcept { return body_; }
     [[nodiscard]] Timestamp at() const noexcept { return at_; }
 
-    [[nodiscard]] std::string_view type_name() const noexcept;
-    [[nodiscard]] std::string to_string() const;
-    [[nodiscard]] std::size_t size() const noexcept;
+    [[nodiscard]] virtual std::string_view type_name() const noexcept = 0;
+    [[nodiscard]] virtual std::string to_string() const = 0;
+    [[nodiscard]] virtual std::size_t size() const noexcept = 0;
 
-    // get_if, а не std::get: неверная альтернатива здесь штатная ситуация,
-    // а не исключительная. Исполнитель сам решает, превратить ли её
-    // в TypeMismatchError.
-    template <class T> [[nodiscard]] const T* get_if() const noexcept { return std::get_if<T>(&body_); }
-    template <class T> [[nodiscard]] T* get_if() noexcept { return std::get_if<T>(&body_); }
-    template <class T> [[nodiscard]] bool holds() const noexcept { return std::holds_alternative<T>(body_); }
+    // Виртуальный конструктор копирования. Копировать сообщение через
+    // указатель на базу нельзя: неизвестно, какой класс создавать. На clone
+    // держится сильная гарантия рассылки из этапа 3: копии сообщения для
+    // каждой комнаты делаются им.
+    [[nodiscard]] virtual std::unique_ptr<IMessage> clone() const = 0;
+
+protected:
+    IMessage(std::string author, Timestamp at) noexcept : author_(std::move(author)), at_(at) {}
+    // Копирование базы — только для наследников, иначе объект обрезался бы.
+    IMessage(const IMessage&) = default;
+    IMessage& operator=(const IMessage&) = default;
 
 private:
     std::string author_;
-    Body body_;
-    Timestamp at_ = Timestamp{};
+    Timestamp at_;
 };
 
-inline bool operator==(const Message& lhs, const Message& rhs) {
-    return lhs.author() == rhs.author() && lhs.body() == rhs.body() && lhs.at() == rhs.at();
+using MessagePtr = std::unique_ptr<IMessage>;
+
+class TextMessage final : public IMessage {
+public:
+    TextMessage(std::string author, std::string text, Timestamp at = Timestamp{}) noexcept
+        : IMessage(std::move(author), at), text_(std::move(text)) {}
+
+    [[nodiscard]] std::string_view type_name() const noexcept override { return "text"; }
+    [[nodiscard]] std::string to_string() const override { return text_; }
+    [[nodiscard]] std::size_t size() const noexcept override { return text_.size(); }
+    [[nodiscard]] MessagePtr clone() const override;
+
+    [[nodiscard]] const std::string& text() const noexcept { return text_; }
+
+private:
+    std::string text_;
+};
+
+// Системное уведомление: вошёл, вышел, сменил тему.
+class SystemMessage final : public IMessage {
+public:
+    SystemMessage(std::string author, std::string text, Timestamp at = Timestamp{}) noexcept
+        : IMessage(std::move(author), at), text_(std::move(text)) {}
+
+    [[nodiscard]] std::string_view type_name() const noexcept override { return "notice"; }
+    [[nodiscard]] std::string to_string() const override { return "* " + text_; }
+    [[nodiscard]] std::size_t size() const noexcept override { return text_.size(); }
+    [[nodiscard]] MessagePtr clone() const override;
+
+private:
+    std::string text_;
+};
+
+// Реакция :name: со счётчиком. Единственное изменяемое сообщение.
+class ReactionMessage final : public IMessage {
+public:
+    ReactionMessage(std::string author, std::string emoji, std::int64_t count = 1,
+                    Timestamp at = Timestamp{}) noexcept
+        : IMessage(std::move(author), at), emoji_(std::move(emoji)), count_(count) {}
+
+    [[nodiscard]] std::string_view type_name() const noexcept override { return "reaction"; }
+    [[nodiscard]] std::string to_string() const override;
+    [[nodiscard]] std::size_t size() const noexcept override { return emoji_.size(); }
+    [[nodiscard]] MessagePtr clone() const override;
+
+    [[nodiscard]] const std::string& emoji() const noexcept { return emoji_; }
+    [[nodiscard]] std::int64_t count() const noexcept { return count_; }
+    void set_count(std::int64_t count) noexcept { count_ = count; }
+
+private:
+    std::string emoji_;
+    std::int64_t count_;
+};
+
+// Фабрики — чтобы вызывающий код не писал make_unique с полным именем класса
+// и сразу получал указатель на базу.
+[[nodiscard]] MessagePtr make_text(std::string author, std::string text);
+[[nodiscard]] MessagePtr make_notice(std::string author, std::string text);
+[[nodiscard]] MessagePtr make_reaction(std::string author, std::string emoji);
+
+// Копия элемента истории для рассылки. Хранилище — шаблон по типу элемента,
+// и в тестах туда подставляются копируемые типы; для них копия — обычное
+// копирование, для сообщения в unique_ptr — clone. Выбор перегрузкой.
+template <class M>
+[[nodiscard]] M duplicate(const M& message) {
+    return message;
 }
 
-inline bool operator!=(const Message& lhs, const Message& rhs) { return !(lhs == rhs); }
+[[nodiscard]] inline MessagePtr duplicate(const MessagePtr& message) {
+    return message->clone();
+}
 
 }  // namespace chat

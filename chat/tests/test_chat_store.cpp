@@ -9,21 +9,21 @@
 
 using chat::BasicChatStore;
 using chat::ChatStore;
-using chat::Message;
+using chat::make_text;
 using chat::testing::Tracked;
 
 TEST(ChatStore, PostThenReadHistory) {
     ChatStore store;
     store.create_room("#general");
-    store.post("#general", Message("alice", "hello"));
-    store.post("#general", Message("bob", "hi"));
+    store.post("#general", make_text("alice", "hello"));
+    store.post("#general", make_text("bob", "hi"));
 
     // if с инициализацией: результат ограничен областью проверки.
     if (const auto history = store.history("#general"); history) {
         const auto& messages = history->get();
         ASSERT_EQ(messages.size(), 2u);
-        EXPECT_EQ(messages[0].author(), std::string("alice"));
-        EXPECT_EQ(messages[1].to_string(), std::string("hi"));
+        EXPECT_EQ(messages[0]->author(), std::string("alice"));
+        EXPECT_EQ(messages[1]->to_string(), std::string("hi"));
     } else {
         ADD_FAILURE() << "room must exist";
     }
@@ -47,6 +47,8 @@ TEST(ChatStore, CreateRoomReportsWhetherItWasNew) {
 
 TEST(ChatStore, JoinAndLeaveTrackMembers) {
     ChatStore store;
+    store.register_user("alice");
+    store.register_user("bob");
     EXPECT_TRUE(store.join("#general", "alice"));
     EXPECT_FALSE(store.join("#general", "alice"));   // повторный вход ничего не меняет
     EXPECT_TRUE(store.join("#general", "bob"));
@@ -58,13 +60,14 @@ TEST(ChatStore, JoinAndLeaveTrackMembers) {
 
     const auto members = store.members("#general");
     ASSERT_TRUE(members.has_value());
-    EXPECT_EQ(members->get().size(), 1u);
+    ASSERT_EQ(members->size(), 1u);
+    EXPECT_EQ(members->front()->nick(), std::string("alice"));
 }
 
 TEST(ChatStore, MessageAtGivesOptionalReferenceInsteadOfPointer) {
     ChatStore store;
     store.create_room("#general");
-    store.post("#general", Message("alice", "hello"));
+    store.post("#general", make_text("alice", "hello"));
 
     EXPECT_TRUE(store.message_at("#general", 0).has_value());
     EXPECT_FALSE(store.message_at("#general", 1).has_value());
@@ -117,9 +120,9 @@ TEST(ChatStore, ForEachRoomVisitsRoomsInNameOrder) {
     store.create_room("#b");
     store.create_room("#a");
     store.create_room("#c");
-    store.post("#b", Message("u", "2"));
-    store.post("#a", Message("u", "1"));
-    store.post("#c", Message("u", "3"));
+    store.post("#b", make_text("u", "2"));
+    store.post("#a", make_text("u", "1"));
+    store.post("#c", make_text("u", "3"));
 
     std::vector<std::string> seen;
     store.for_each_room([&seen](const std::string& room, const chat::History&) {
@@ -136,9 +139,9 @@ TEST(ChatStore, CaptureByReferenceAccumulatesButByValueDoesNot) {
     ChatStore store;
     store.create_room("#a");
     store.create_room("#b");
-    store.post("#a", Message("u", "1"));
-    store.post("#a", Message("u", "2"));
-    store.post("#b", Message("u", "3"));
+    store.post("#a", make_text("u", "1"));
+    store.post("#a", make_text("u", "2"));
+    store.post("#b", make_text("u", "3"));
 
     int by_reference = 0;
     store.for_each_room([&by_reference](const std::string&, const chat::History& h) {
@@ -157,43 +160,51 @@ TEST(ChatStore, CaptureByReferenceAccumulatesButByValueDoesNot) {
 TEST(ChatStore, PostToUnknownRoomThrows) {
     ChatStore store;
     // Этап 3: комнаты создаёт только вход в них, отправка — нет.
-    EXPECT_THROW(store.post("#absent", Message("alice", "hello")), chat::UnknownRoomError);
+    EXPECT_THROW(store.post("#absent", make_text("alice", "hello")), chat::UnknownRoomError);
     EXPECT_EQ(store.room_count(), 0u);
 }
 
 TEST(ChatStore, NicknameRegistryRejectsDuplicates) {
     ChatStore store;
-    store.register_nick("alice");
-    EXPECT_THROW(store.register_nick("alice"), chat::NicknameTakenError);
-    store.release_nick("alice");
-    EXPECT_NO_THROW(store.register_nick("alice"));
+    store.register_user("alice");
+    EXPECT_THROW(store.register_user("alice"), chat::NicknameTakenError);
+    store.release_user("alice");
+    EXPECT_NO_THROW(store.register_user("alice"));
 }
 
-TEST(ChatStore, RenameUpdatesRegistryAndEveryRoom) {
+TEST(ChatStore, JoinNeedsRegisteredUser) {
     ChatStore store;
-    store.register_nick("alice");
+    EXPECT_THROW(store.join("#general", "ghost"), chat::UnknownUserError);
+    EXPECT_EQ(store.room_count(), 0u);   // комната не создана
+}
+
+TEST(ChatStore, RenameTouchesOneObjectAndNoRoom) {
+    ChatStore store;
+    const auto alice = store.register_user("alice");
     store.join("#a", "alice");
     store.join("#b", "alice");
+    store.register_user("bob");
     store.join("#c", "bob");
 
     store.rename("alice", "alicia");
 
-    EXPECT_FALSE(store.has_nick("alice"));
-    EXPECT_TRUE(store.has_nick("alicia"));
+    // Комнаты хранят ссылку на объект, а не строку: тот же объект, новое имя.
+    EXPECT_EQ(alice->nick(), std::string("alicia"));
+    EXPECT_EQ(store.find_user("alicia"), alice);
+    EXPECT_FALSE(store.has_user("alice"));
     EXPECT_TRUE(store.is_member("#a", "alicia"));
     EXPECT_TRUE(store.is_member("#b", "alicia"));
-    EXPECT_FALSE(store.is_member("#a", "alice"));
-    EXPECT_FALSE(store.is_member("#c", "alicia"));   // в чужие комнаты не попадает
+    EXPECT_FALSE(store.is_member("#c", "alicia"));
 }
 
 TEST(ChatStore, RenameToTakenNickChangesNothing) {
     ChatStore store;
-    store.register_nick("alice");
-    store.register_nick("bob");
+    store.register_user("alice");
+    store.register_user("bob");
     store.join("#a", "alice");
 
     EXPECT_THROW(store.rename("alice", "bob"), chat::NicknameTakenError);
-    EXPECT_TRUE(store.has_nick("alice"));
+    EXPECT_TRUE(store.has_user("alice"));
+    EXPECT_EQ(store.find_user("alice")->nick(), std::string("alice"));
     EXPECT_TRUE(store.is_member("#a", "alice"));
-    EXPECT_FALSE(store.is_member("#a", "bob"));
 }

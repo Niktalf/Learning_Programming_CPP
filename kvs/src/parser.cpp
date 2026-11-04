@@ -115,6 +115,18 @@ Command parse(const InputLine& input) {
         }
         return mset;
     }
+    if (equals_ignore_case(verb, "RPUSH")) {
+        if (argc != 2) {
+            fail("RPUSH expects 2 arguments", line);
+        }
+        return RpushCommand{tokens[1], tokens[2]};
+    }
+    if (equals_ignore_case(verb, "LLEN")) {
+        if (argc != 1) {
+            fail("LLEN expects 1 argument", line);
+        }
+        return LlenCommand{tokens[1]};
+    }
     fail("unknown command: " + std::string(verb), line);
 }
 
@@ -189,6 +201,18 @@ Result<Command, ParseError> try_parse(const InputLine& input) {
             mset.pairs.emplace_back(tokens[i], tokens[i + 1]);
         }
         return Command{std::move(mset)};
+    }
+    if (equals_ignore_case(verb, "RPUSH")) {
+        if (argc != 2) {
+            return failure("RPUSH expects 2 arguments", line);
+        }
+        return Command{RpushCommand{tokens[1], tokens[2]}};
+    }
+    if (equals_ignore_case(verb, "LLEN")) {
+        if (argc != 1) {
+            return failure("LLEN expects 1 argument", line);
+        }
+        return Command{LlenCommand{tokens[1]}};
     }
     return failure("unknown command: " + std::string(verb), line);
 }

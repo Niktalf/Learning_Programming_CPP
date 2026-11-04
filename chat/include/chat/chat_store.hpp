@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -14,18 +15,28 @@
 
 #include "chat/errors.hpp"
 #include "chat/message.hpp"
+#include "chat/user.hpp"
 
 namespace chat {
 
-// Хранилище параметризовано типом сообщения по одной практической причине:
-// в тестах вместо Message подставляется инструментированный тип, считающий
-// копирования и перемещения. Без этого утверждение «добавление временного
-// сообщения не копирует» проверить нечем.
+// Хранилище параметризовано типом элемента истории по одной практической
+// причине: в тестах вместо MessagePtr подставляется инструментированный тип,
+// считающий копирования и перемещения. Без этого утверждение «добавление
+// временного сообщения не копирует» проверить нечем.
 template <class M>
 class BasicChatStore {
 public:
     using History = std::vector<M>;
-    using Members = std::set<std::string, std::less<>>;
+
+    // Этап 4: участники — наблюдатели, а не владельцы. Пользователями владеет
+    // реестр (shared_ptr), комната хранит weak_ptr. Ушедший пользователь
+    // исчезает из реестра, и комната его больше не удерживает.
+    //
+    // std::owner_less сравнивает weak_ptr по контрольному блоку, а не по
+    // значению указателя, и сравнение остаётся корректным, даже когда объект
+    // уже уничтожен. Поэтому истёкший weak_ptr можно хранить в set и найти,
+    // чтобы удалить.
+    using Members = std::set<std::weak_ptr<User>, std::owner_less<>>;
 
     // Комната — история, участники и тема. Структура, а не класс: инвариантов,
     // которые надо охранять, у неё нет, их держит хранилище.
@@ -40,38 +51,144 @@ public:
         return rooms_.try_emplace(std::move(room)).second;
     }
 
+    // --- Реестр пользователей ----------------------------------------------
+
+    // Регистрация ника. make_shared: объект и контрольный блок — одна
+    // аллокация. Обратная сторона для чата: память под User освободится,
+    // только когда умрёт и последний weak_ptr, то есть когда истёкшую запись
+    // уберёт purge_departed.
+    std::shared_ptr<User> register_user(std::string nick) {
+        if (users_.count(nick) != 0) {
+            throw NicknameTakenError(std::move(nick));
+        }
+        auto user = std::make_shared<User>(nick);
+        users_.emplace(std::move(nick), user);
+        return user;
+    }
+
+    // Реестр перестаёт владеть пользователем: на этапе 15 это отключение
+    // клиента. Комнаты об этом не узнают и не должны: их weak_ptr истекают
+    // сами, и is_member, members и рассылка ушедшего больше не видят.
+    void release_user(std::string_view nick) {
+        if (const auto it = users_.find(nick); it != users_.end()) {
+            users_.erase(it);
+        }
+    }
+
+    [[nodiscard]] bool has_user(std::string_view nick) const {
+        return users_.find(nick) != users_.end();
+    }
+
+    // Пользователь по нику или nullptr.
+    [[nodiscard]] std::shared_ptr<User> find_user(std::string_view nick) const {
+        const auto it = users_.find(nick);
+        return it == users_.end() ? nullptr : it->second;
+    }
+
+    // Смена ника. На этапе 3 это была операция над всеми комнатами: ник
+    // приходилось заменить в составе каждой. Теперь комнаты хранят ссылку
+    // на объект User, а не строку, и смена ника касается одного объекта и
+    // одной записи реестра. Ни одна комната не меняется.
+    //
+    // Сильная гарантия: всё, что выделяет память, — до извлечения узла.
+    // Дальше только перемещения строк и перенос узла map (extract/insert из
+    // C++17), а он не выделяет памяти; бросить может лишь сравнение ключей,
+    // а сравнение строк не бросает.
+    void rename(std::string_view from, std::string to) {
+        if (from == to) {
+            return;
+        }
+        if (users_.count(to) != 0) {
+            throw NicknameTakenError(std::move(to));
+        }
+        const auto it = users_.find(from);
+        if (it == users_.end()) {
+            throw UnknownUserError(std::string(from));
+        }
+        std::string nick_for_user = to;   // копия может бросить — ничего не изменено
+
+        auto node = users_.extract(it);
+        node.key() = std::move(to);
+        node.mapped()->rename(std::move(nick_for_user));
+        users_.insert(std::move(node));
+    }
+
+    [[nodiscard]] std::size_t user_count() const noexcept { return users_.size(); }
+
+    // --- Участники ----------------------------------------------------------
+
     // Вход в комнату. Несуществующая комната создаётся — в чате войти в
     // новую комнату и значит её завести. Возвращает false, если участник уже
-    // был в комнате.
+    // был в комнате. Незарегистрированный ник — UnknownUserError.
     bool join(std::string_view room, std::string_view nick) {
-        const auto it = rooms_.try_emplace(std::string(room)).first;
-        return it->second.members.emplace(nick).second;
+        const std::shared_ptr<User> user = require_user(nick);
+        Room& target = rooms_.try_emplace(std::string(room)).first->second;
+        purge(target.members);
+        return target.members.insert(user).second;
     }
 
     // Выход. false — если комнаты нет или участника в ней не было.
     bool leave(std::string_view room, std::string_view nick) {
         const auto it = rooms_.find(room);
-        if (it == rooms_.end()) {
+        const std::shared_ptr<User> user = find_user(nick);
+        if (it == rooms_.end() || !user) {
             return false;
         }
-        Members& members = it->second.members;
-        const auto member = members.find(nick);
-        if (member == members.end()) {
-            return false;
-        }
-        members.erase(member);
-        return true;
+        purge(it->second.members);
+        return it->second.members.erase(user) != 0;
     }
 
     [[nodiscard]] bool is_member(std::string_view room, std::string_view nick) const {
         const auto it = rooms_.find(room);
-        return it != rooms_.end() && it->second.members.count(nick) != 0;
+        const std::shared_ptr<User> user = find_user(nick);
+        return it != rooms_.end() && user && it->second.members.count(user) != 0;
     }
 
-    // Добавление сообщения. Этап 3: комнаты создаёт только /join, и отправка
-    // в несуществующую комнату — UnknownRoomError, а не молчаливое создание.
-    // Проверка «писать может только участник» — правило команды, а не
-    // хранилища, и живёт в исполнителе.
+    // Живые участники, по алфавиту. Каждый удержан shared_ptr: пока вызывающий
+    // держит результат — например, на время рассылки на этапе 15, —
+    // участник не исчезнет посреди операции. weak_ptr не запрещает владеть,
+    // он запрещает владеть постоянно.
+    [[nodiscard]] std::optional<std::vector<std::shared_ptr<User>>>
+    members(std::string_view room) const {
+        const auto it = rooms_.find(room);
+        if (it == rooms_.end()) {
+            return std::nullopt;
+        }
+        std::vector<std::shared_ptr<User>> alive;
+        for (const std::weak_ptr<User>& member : it->second.members) {
+            // lock, а не expired с последующим доступом: между проверкой и
+            // доступом объект мог бы умереть. lock делает и то и другое разом.
+            if (std::shared_ptr<User> user = member.lock()) {
+                alive.push_back(std::move(user));
+            }
+        }
+        std::sort(alive.begin(), alive.end(),
+                  [](const auto& a, const auto& b) { return a->nick() < b->nick(); });
+        return alive;
+    }
+
+    // Сколько записей в составе комнаты, включая истёкшие. Нужен тестам —
+    // чтобы увидеть, что очистка работает.
+    [[nodiscard]] std::size_t member_entries(std::string_view room) const {
+        const auto it = rooms_.find(room);
+        return it == rooms_.end() ? 0 : it->second.members.size();
+    }
+
+    // Очистка истёкших записей во всех комнатах. Без неё составы растут на
+    // каждого ушедшего: объекты освобождены, а записи остались. join и
+    // leave чистят свою комнату сами; эта функция — для всех сразу.
+    std::size_t purge_departed() {
+        std::size_t removed = 0;
+        for (auto& [name, room] : rooms_) {
+            removed += purge(room.members);
+        }
+        return removed;
+    }
+
+    // --- Сообщения ----------------------------------------------------------
+
+    // Добавление сообщения. Комнаты создаёт только /join, и отправка
+    // в несуществующую комнату — UnknownRoomError.
     void post(std::string_view room, M message) {
         const auto it = rooms_.find(room);
         if (it == rooms_.end()) {
@@ -120,10 +237,13 @@ public:
 
         // Шаг 2: копии сообщения — по одной на каждую комнату, кроме
         // последней: ей достаётся оригинал. Здесь бросают копирования.
+        // Этап 4: сообщение лежит в unique_ptr, который не копируется, и
+        // копию делает duplicate — для сообщения это clone. Без этого шага
+        // рассылка просто не собралась бы.
         std::vector<M> copies;
         copies.reserve(targets.size());
         for (std::size_t i = 0; i + 1 < targets.size(); ++i) {
-            copies.push_back(message);
+            copies.push_back(duplicate(message));
         }
         copies.push_back(std::move(message));
 
@@ -137,14 +257,9 @@ public:
         commit(targets, copies);
     }
 
-    // Этап 2: вместо сырого указателя — std::optional. Отсутствие комнаты
-    // теперь выражено в типе, и вызывающий не может забыть о проверке.
-    //
-    // Внутри optional лежит reference_wrapper, а не копия. Причина
-    // практическая: std::optional<T&> стандартом не предусмотрен, а копировать
-    // историю из тысяч сообщений на каждый запрос недопустимо. Это тот случай,
-    // когда optional не бесплатен и приходится помнить, что ссылка живёт
-    // ровно столько, сколько живёт комната.
+    // Этап 2: вместо сырого указателя — std::optional. Внутри — ссылка через
+    // reference_wrapper: std::optional<T&> стандартом не предусмотрен, а
+    // копировать историю на каждый запрос недопустимо.
     [[nodiscard]] std::optional<std::reference_wrapper<const History>>
     history(std::string_view room) const {
         const auto it = rooms_.find(room);
@@ -154,18 +269,7 @@ public:
         return std::cref(it->second.history);
     }
 
-    [[nodiscard]] std::optional<std::reference_wrapper<const Members>>
-    members(std::string_view room) const {
-        const auto it = rooms_.find(room);
-        if (it == rooms_.end()) {
-            return std::nullopt;
-        }
-        return std::cref(it->second.members);
-    }
-
-    // Изменяющий доступ к сообщению нужен команде REACT. Возвращается
-    // optional со ссылкой, а не сырой указатель: «нет такого сообщения»
-    // выражено в типе так же, как «нет такой комнаты» у history.
+    // Изменяющий доступ к сообщению нужен команде REACT.
     [[nodiscard]] std::optional<std::reference_wrapper<M>>
     message_at(std::string_view room, std::size_t index) {
         const auto it = rooms_.find(room);
@@ -201,63 +305,6 @@ public:
         return true;
     }
 
-    // Реестр ников. Ник занимается при входе в чат и освобождается при
-    // выходе; занятый ник — NicknameTakenError.
-    void register_nick(std::string nick) {
-        if (nicks_.count(nick) != 0) {
-            throw NicknameTakenError(std::move(nick));
-        }
-        nicks_.insert(std::move(nick));
-    }
-
-    void release_nick(std::string_view nick) {
-        if (const auto it = nicks_.find(nick); it != nicks_.end()) {
-            nicks_.erase(it);
-        }
-    }
-
-    [[nodiscard]] bool has_nick(std::string_view nick) const {
-        return nicks_.find(nick) != nicks_.end();
-    }
-
-    // Смена ника — ещё одна операция над несколькими комнатами: ник надо
-    // заменить в реестре и в составе каждой комнаты, где участник состоит.
-    // Гарантия та же, что у post_many: новые составы готовятся в стороне,
-    // затем меняются местами с текущими. swap у std::set — noexcept, поэтому
-    // фиксация не бросает.
-    //
-    // Уже отправленные сообщения сохраняют старое имя автора: история — это
-    // запись того, что было.
-    void rename(std::string_view from, std::string to) {
-        if (from == to) {
-            return;
-        }
-        if (nicks_.count(to) != 0) {
-            throw NicknameTakenError(std::move(to));
-        }
-
-        Members next_nicks = nicks_;
-        next_nicks.erase(std::string(from));
-        next_nicks.insert(to);
-
-        std::vector<std::pair<Members*, Members>> next_members;
-        for (auto& [name, room] : rooms_) {
-            if (room.members.find(from) == room.members.end()) {
-                continue;
-            }
-            Members updated = room.members;
-            updated.erase(std::string(from));
-            updated.insert(to);
-            next_members.emplace_back(&room.members, std::move(updated));
-        }
-
-        // Точка невозврата: дальше только обмены, ни один не бросает.
-        nicks_.swap(next_nicks);
-        for (auto& [target, updated] : next_members) {
-            target->swap(updated);
-        }
-    }
-
     [[nodiscard]] bool contains(std::string_view room) const {
         return rooms_.find(room) != rooms_.end();
     }
@@ -268,9 +315,6 @@ public:
     // Функтор принимается по значению — как это делают алгоритмы стандартной
     // библиотеки. Именно поэтому лямбда с захватом по значению и mutable не
     // выносит изменения наружу: меняется копия.
-    //
-    // Structured bindings из C++17: пара раскладывается на имена, а не
-    // читается через first и second.
     template <class F>
     void for_each_room(F fn) const {
         for (const auto& [name, room] : rooms_) {
@@ -279,6 +323,27 @@ public:
     }
 
 private:
+    [[nodiscard]] std::shared_ptr<User> require_user(std::string_view nick) const {
+        std::shared_ptr<User> user = find_user(nick);
+        if (!user) {
+            throw UnknownUserError(std::string(nick));
+        }
+        return user;
+    }
+
+    static std::size_t purge(Members& members) {
+        std::size_t removed = 0;
+        for (auto it = members.begin(); it != members.end();) {
+            if (it->expired()) {
+                it = members.erase(it);
+                ++removed;
+            } else {
+                ++it;
+            }
+        }
+        return removed;
+    }
+
     static void reserve_one_more(History& history) {
         if (history.size() == history.capacity()) {
             // Удвоение, а не +1: иначе каждая рассылка перевыделяла бы
@@ -302,10 +367,10 @@ private:
     // и не создают временную строку на каждый вызов.
     using Map = std::map<std::string, Room, std::less<>>;
     Map rooms_;
-    Members nicks_;
+    std::map<std::string, std::shared_ptr<User>, std::less<>> users_;
 };
 
-using ChatStore = BasicChatStore<Message>;
+using ChatStore = BasicChatStore<MessagePtr>;
 using History = ChatStore::History;
 
 }  // namespace chat

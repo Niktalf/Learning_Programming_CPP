@@ -1,12 +1,14 @@
-#include "kvs/handler.hpp"
+#include "kvs/server.hpp"
 
 #include <exception>
+#include <memory>
 #include <new>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "kvs/errors.hpp"
+#include "kvs/file.hpp"
 #include "kvs/parser.hpp"
 
 namespace kvs {
@@ -43,12 +45,53 @@ namespace {
     }
 }
 
+[[nodiscard]] Store make_store(const std::optional<std::size_t>& limit) {
+    return limit ? Store(*limit) : Store();
+}
+
 }  // namespace
 
-Response handle(Store& store, std::string line) {
-    const InputLine input{std::move(line)};
+Server::Server(const Options& options) : store_(make_store(options.memory_limit)) {
+    if (!options.log) {
+        return;
+    }
+    const std::filesystem::path& path = *options.log;
+    if (std::filesystem::exists(path)) {
+        const std::vector<std::string> records = read_lines(path);
+        for (std::size_t i = 0; i < records.size(); ++i) {
+            // Восстановление — не граница: неудача здесь означает
+            // испорченный журнал, и сервер запускаться не должен. Контекст
+            // прикладывается тем же std::throw_with_nested, что и в execute.
+            try {
+                const InputLine line{records[i]};
+                static_cast<void>(execute(store_, parse(line)));
+            } catch (...) {
+                std::throw_with_nested(KvError("while replaying " + path.string() + " line " +
+                                               std::to_string(i + 1)));
+            }
+        }
+    }
+    log_.emplace(path);
+}
+
+Response Server::handle(std::string line) {
     try {
-        return execute(store, parse(input));
+        // Владелец запроса — эта функция, пока команда исполняется. Кэш
+        // только наблюдает через weak_ptr.
+        const std::shared_ptr<const Request> request = cache_.get(line);
+        Response response = execute(store_, request->command());
+        // В журнал — только успешные изменения: неудачная команда при
+        // восстановлении снова бы не удалась.
+        //
+        // Ограничение, о котором стоит знать: если запись в журнал не
+        // удалась, хранилище уже изменено, а клиент получит ошибку.
+        // Журнал до исполнения (write-ahead) этого не допускает, но требует
+        // отката по журналу. К этому вопросу курс вернётся на этапе 17,
+        // вместе со снапшотами.
+        if (log_ && modifies(request->command())) {
+            log_->append(request->text());
+        }
+        return response;
     } catch (...) {
         // catch (...) допустим только здесь, на самой внешней границе, и
         // только с осмысленным ответом. Проглотить молча было бы хуже, чем
@@ -59,8 +102,7 @@ Response handle(Store& store, std::string line) {
         // GET k)». Клиенту видно и что случилось, и на какой команде.
         const std::exception_ptr error = std::current_exception();
         std::string text = "ERR " + reason_of(root_cause(error));
-        const std::vector<std::string> context = context_of(error);
-        for (const std::string& step : context) {
+        for (const std::string& step : context_of(error)) {
             text += " (" + step + ")";
         }
         return Response{false, std::move(text)};

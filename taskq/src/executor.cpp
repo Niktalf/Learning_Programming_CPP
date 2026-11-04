@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <exception>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -13,6 +14,7 @@
 
 #include "taskq/errors.hpp"
 #include "taskq/overloaded.hpp"
+#include "taskq/payload.hpp"
 
 namespace taskq {
 namespace {
@@ -62,13 +64,13 @@ constexpr std::string_view binary_prefix = "bin:";
 // Тело задачи по префиксу: num:42 — числовой аргумент, bin:cafe — двоичные
 // данные в шестнадцатеричной записи, всё остальное — текстовая команда.
 // Некорректный префиксный вид — ошибка разбора тела, а не тихий текст.
-[[nodiscard]] Payload make_payload(std::string_view body) {
+[[nodiscard]] PayloadPtr make_payload(std::string_view body) {
     if (body.substr(0, number_prefix.size()) == number_prefix) {
         const auto value = to_int(body.substr(number_prefix.size()));
         if (!value) {
             throw ParseError("num: payload must be a 64-bit integer", std::string(body));
         }
-        return NumericPayload{*value};
+        return std::make_unique<NumericPayload>(*value);
     }
     if (body.substr(0, binary_prefix.size()) == binary_prefix) {
         auto bytes = from_hex(body.substr(binary_prefix.size()));
@@ -76,9 +78,9 @@ constexpr std::string_view binary_prefix = "bin:";
             throw ParseError("bin: payload must be an even number of hex digits",
                              std::string(body));
         }
-        return BinaryPayload{std::move(*bytes)};
+        return std::make_unique<BinaryPayload>(std::move(*bytes));
     }
-    return TextPayload{std::string(body)};
+    return std::make_unique<TextPayload>(std::string(body));
 }
 
 // Сложение с проверкой переполнения. Необходимость нашёл фаззер из домашнего
@@ -108,6 +110,9 @@ constexpr std::string_view binary_prefix = "bin:";
             [](const StatusCommand& c) { return "STATUS " + std::to_string(c.id); },
             [](const TypeCommand& c) { return "TYPE " + std::to_string(c.id); },
             [](const BumpCommand& c) { return "BUMP " + std::to_string(c.id); },
+            [](const WorkerCommand& c) { return "WORKER " + std::string(c.name); },
+            [](const GoneCommand& c) { return "GONE " + std::string(c.name); },
+            [](const ReapCommand&) { return std::string("REAP"); },
         },
         command);
 }
@@ -157,6 +162,9 @@ Response Service::submit_all(const std::vector<SubmitCommand>& items) {
 
     store_.submit_batch(tasks);
     states_.merge(added);
+    for (TaskId submitted = next_id_; submitted < id; ++submitted) {
+        record(submitted, "-", State::Pending);
+    }
 
     const TaskId first = next_id_;
     next_id_ = id;
@@ -171,24 +179,78 @@ Response Service::submit_all(const std::vector<SubmitCommand>& items) {
 // на узел map: из очереди она уже ушла, в аренду не попала. Поэтому место
 // в leases_ готовится заранее, и задача переезжает в него перемещением,
 // которое не бросает.
-Response Service::poll(std::string_view queue) {
-    const auto id = store_.front_id(queue);   // нет очереди — UnknownQueueError
+Response Service::poll(const PollCommand& command) {
+    // Воркер, от имени которого берут задачу, должен быть в реестре.
+    std::shared_ptr<Worker> worker;
+    if (command.worker) {
+        const auto it = workers_.find(*command.worker);
+        if (it == workers_.end()) {
+            throw UnknownWorkerError(std::string(*command.worker));
+        }
+        worker = it->second;
+    }
+
+    const auto id = store_.front_id(command.queue);   // нет очереди — UnknownQueueError
     if (!id) {
         return Response{true, "(empty)"};   // пустая очередь — не ошибка
     }
     require_transition(*id, State::Leased);
 
-    // Подготовка: узел map и копия имени очереди. Здесь может бросить, но
-    // очередь ещё не тронута.
-    const auto slot = leases_.try_emplace(*id, Lease{Task{}, std::string(queue)}).first;
+    // Подготовка: узел map и копии строк. Здесь может бросить, но очередь
+    // ещё не тронута. weak_ptr строится из shared_ptr без выделения памяти.
+    Lease prepared{Task{}, std::string(command.queue), std::nullopt, std::string()};
+    if (worker) {
+        prepared.holder = std::weak_ptr<Worker>(worker);
+        prepared.holder_name = worker->name();
+    }
+    const auto slot = leases_.try_emplace(*id, std::move(prepared)).first;
 
     // Фиксация: ни одна операция ниже не бросает.
-    slot->second.task = std::move(*store_.take(queue));
+    slot->second.task = std::move(*store_.take(command.queue));
     transition_to(*id, State::Leased);
+    record(*id, name(State::Pending), State::Leased);
 
     std::ostringstream out;
     out << "id=" << *id << ' ' << slot->second.task.to_string();
     return Response{true, out.str()};
+}
+
+void Service::return_lease(TaskId id) {
+    // Возврат аренды: задача встаёт в конец своей очереди. Сначала копия в
+    // очередь — если она бросит, аренда цела; затем удаление аренды, которое
+    // не бросает. Копия — цена простоты: возврат редок по сравнению с POLL.
+    require_transition(id, State::Pending);
+    const auto lease = leases_.find(id);
+    store_.submit(lease->second.queue, lease->second.task);
+    leases_.erase(lease);
+    transition_to(id, State::Pending);
+    record(id, name(State::Leased), State::Pending);
+}
+
+// Возврат брошенных задач — тех, чей держатель исчез. На этапе 11 то же
+// самое будет делать фоновый сборщик, вместе с проверкой срока аренды.
+//
+// Каждая задача возвращается с сильной гарантией, а вся операция — с
+// базовой: если на пятой задаче кончится память, первые четыре уже в
+// очередях, и это корректное состояние — каждая задача либо в очереди,
+// либо в аренде, и ни одна не потеряна.
+Response Service::reap() {
+    std::vector<TaskId> abandoned;
+    for (const auto& [id, lease] : leases_) {
+        if (lease.abandoned()) {
+            abandoned.push_back(id);
+        }
+    }
+    for (const TaskId id : abandoned) {
+        return_lease(id);
+    }
+    return Response{true, "OK returned=" + std::to_string(abandoned.size())};
+}
+
+void Service::record(TaskId id, std::string_view from, State to) {
+    if (log_) {
+        log_->append(std::to_string(id) + '\t' + std::string(from) + '\t' + std::string(name(to)));
+    }
 }
 
 Response Service::run(const Command& command) {
@@ -200,29 +262,23 @@ Response Service::run(const Command& command) {
             },
             [&](const SubmitCommand& c) { return submit_all({c}); },
             [&](const BatchCommand& c) { return submit_all(c.items); },
-            [&](const PollCommand& c) { return poll(c.queue); },
+            [&](const PollCommand& c) { return poll(c); },
             [&](const AckCommand& c) {
                 require_transition(c.id, State::Done);
                 leases_.erase(c.id);
                 transition_to(c.id, State::Done);
+                record(c.id, name(State::Leased), State::Done);
                 return Response{true, "OK"};
             },
             [&](const FailCommand& c) {
                 require_transition(c.id, State::Failed);
                 leases_.erase(c.id);
                 transition_to(c.id, State::Failed);
+                record(c.id, name(State::Leased), State::Failed);
                 return Response{true, "OK"};
             },
             [&](const ReleaseCommand& c) {
-                // Возврат аренды: задача встаёт в конец своей очереди.
-                // Сначала копия в очередь — если она бросит, аренда цела;
-                // затем удаление аренды, которое не бросает. Копия — цена
-                // простоты; RELEASE редок по сравнению с POLL.
-                require_transition(c.id, State::Pending);
-                const auto lease = leases_.find(c.id);
-                store_.submit(lease->second.queue, lease->second.task);
-                leases_.erase(lease);
-                transition_to(c.id, State::Pending);
+                return_lease(c.id);
                 return Response{true, "OK"};
             },
             [&](const StatusCommand& c) {
@@ -230,6 +286,14 @@ Response Service::run(const Command& command) {
                 if (state == State::Pending) {
                     // Задача в состоянии Pending обязана лежать в очереди.
                     return Response{true, "pending in " + store_.queue_of(c.id).value()};
+                }
+                if (state == State::Leased) {
+                    const Lease& lease = leases_.at(c.id);
+                    if (!lease.holder) {
+                        return Response{true, std::string("leased")};
+                    }
+                    return Response{true, "leased by " + lease.holder_name +
+                                              (lease.abandoned() ? " (abandoned)" : "")};
                 }
                 return Response{true, std::string(name(state))};
             },
@@ -252,15 +316,38 @@ Response Service::run(const Command& command) {
                     throw WrongStateError(c.id, state, "BUMP");
                 }
                 Task& task = store_.find(c.id)->get();
-                NumericPayload* const number = task.get_if<NumericPayload>();
+                // Этап 4: вид тела определяет класс, проверка — dynamic_cast
+                // внутри as: указатель или nullptr.
+                NumericPayload* const number = task.as<NumericPayload>();
                 if (number == nullptr) {
                     throw TypeMismatchError(c.id, "number", std::string(task.type_name()));
                 }
                 // Сначала вычисляем, потом присваиваем: бросок из checked_add
                 // оставляет значение прежним.
-                number->value = checked_add(c.id, number->value, c.by);
-                return Response{true, std::to_string(number->value)};
+                number->set_value(checked_add(c.id, number->value(), c.by));
+                return Response{true, std::to_string(number->value())};
             },
+            [&](const WorkerCommand& c) {
+                // make_shared: воркер и контрольный блок — одна аллокация.
+                // Обратная сторона: память блока освободится, только когда
+                // умрут и все weak_ptr на него — то есть когда завершатся
+                // аренды, которые этот воркер держал.
+                const bool created =
+                    workers_.try_emplace(std::string(c.name), std::make_shared<Worker>(std::string(c.name)))
+                        .second;
+                return Response{true, created ? "OK" : "OK, already registered"};
+            },
+            [&](const GoneCommand& c) {
+                // Реестр перестаёт владеть воркером. Его аренды об этом не
+                // узнают и не должны: их weak_ptr истекают сами.
+                const auto it = workers_.find(c.name);
+                if (it == workers_.end()) {
+                    throw UnknownWorkerError(std::string(c.name));
+                }
+                workers_.erase(it);
+                return Response{true, "OK"};
+            },
+            [&](const ReapCommand&) { return reap(); },
         },
         command);
 }

@@ -72,6 +72,19 @@ private:
     std::string nick_;
 };
 
+// Ник не зарегистрирован. Этап 4: в комнату входит объект пользователя из
+// реестра, а не строка, и войти может только тот, кто в реестре есть.
+// На этапе 16 станет кодом 404.
+class UnknownUserError : public ChatError {
+public:
+    explicit UnknownUserError(std::string nick);
+
+    [[nodiscard]] const std::string& nick() const noexcept { return nick_; }
+
+private:
+    std::string nick_;
+};
+
 // Сообщения с таким номером в комнате нет. На этапе 16 станет кодом 404.
 class MessageNotFoundError : public ChatError {
 public:

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <exception>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -43,6 +44,8 @@ std::string describe(const Command& command) {
             [](const ExistsCommand& c) { return "EXISTS " + std::string(c.key); },
             [](const TypeCommand& c) { return "TYPE " + std::string(c.key); },
             [](const IncrCommand& c) { return "INCR " + std::string(c.key); },
+            [](const RpushCommand& c) { return "RPUSH " + std::string(c.key); },
+            [](const LlenCommand& c) { return "LLEN " + std::string(c.key); },
             [](const MsetCommand& c) {
                 std::string text = "MSET";
                 for (const auto& [key, value] : c.pairs) {
@@ -93,17 +96,43 @@ Response run_command(Store& store, const Command& command) {
                     store.set(std::string(c.key), Value(c.by));
                     return Response{true, to_text(c.by)};
                 }
-                // Этап 2 проверял альтернативу через get_if и возвращал флаг.
-                // Теперь неверный тип — ошибка с контекстом в полях: на этапе 16
-                // по ней выберется код ответа.
-                const std::int64_t* const number = current->get_if<std::int64_t>();
+                // Этап 4: тип определяется через иерархию. as<IntValue>() —
+                // это dynamic_cast внутри: указатель или nullptr.
+                const IntValue* const number = current->as<IntValue>();
                 if (number == nullptr) {
                     throw TypeMismatchError(std::string(c.key), "int",
                                             std::string(current->type_name()));
                 }
-                const std::int64_t next = checked_add(c.key, *number, c.by);
+                const std::int64_t next = checked_add(c.key, number->data(), c.by);
                 store.set(std::string(c.key), Value(next));
                 return Response{true, to_text(next)};
+            },
+            [&](const RpushCommand& c) {
+                // Список меняется в копии и записывается обратно через set:
+                // так учёт памяти и проверка предела остаются в одном месте,
+                // а бросок оставляет хранилище прежним. Цена — копия списка
+                // на каждое добавление; изменение на месте появится на
+                // этапе 7 вместе с выбором контейнера.
+                auto current = store.get(c.key);
+                Value list = current ? std::move(*current) : Value(std::make_unique<ListValue>());
+                ListValue* const items = list.as<ListValue>();
+                if (items == nullptr) {
+                    throw TypeMismatchError(std::string(c.key), "list",
+                                            std::string(list.type_name()));
+                }
+                items->push_back(std::string(c.item));
+                const std::size_t length = items->length();
+                store.set(std::string(c.key), std::move(list));
+                return Response{true, std::to_string(length)};
+            },
+            [&](const LlenCommand& c) {
+                const Value value = require(store, c.key);
+                const ListValue* const items = value.as<ListValue>();
+                if (items == nullptr) {
+                    throw TypeMismatchError(std::string(c.key), "list",
+                                            std::string(value.type_name()));
+                }
+                return Response{true, std::to_string(items->length())};
             },
             [&](const MsetCommand& c) {
                 std::vector<std::pair<std::string, Value>> pairs;
@@ -136,6 +165,24 @@ Response execute(Store& store, const Command& command) {
     } catch (...) {
         std::throw_with_nested(KvError("while executing " + describe(command)));
     }
+}
+
+// Каждая команда перечислена явно, без общей ветки auto: добавленная команда
+// не соберётся, пока для неё не решат, пишется ли она в журнал.
+bool modifies(const Command& command) noexcept {
+    return std::visit(
+        overloaded{
+            [](const SetCommand&) { return true; },
+            [](const GetCommand&) { return false; },
+            [](const DelCommand&) { return true; },
+            [](const ExistsCommand&) { return false; },
+            [](const TypeCommand&) { return false; },
+            [](const IncrCommand&) { return true; },
+            [](const MsetCommand&) { return true; },
+            [](const RpushCommand&) { return true; },
+            [](const LlenCommand&) { return false; },
+        },
+        command);
 }
 
 }  // namespace kvs

@@ -16,11 +16,12 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
 
-#include "kvs/handler.hpp"
+#include "kvs/server.hpp"
 
 namespace {
 
@@ -62,63 +63,63 @@ bool memory_accounting_holds(const kvs::Store& store) {
     return total == store.used_bytes();
 }
 
-void feed(kvs::Store& store, std::string line) {
+void feed(kvs::Server& server, std::string line) {
     const std::string copy = line;   // для сообщения об ошибке: line переедет
-    const kvs::Response response = kvs::handle(store, std::move(line));
+    const kvs::Response response = server.handle(std::move(line));
     EXPECT_FALSE(response.text.empty()) << "no response to: " << copy;
 }
 
 }  // namespace
 
 TEST(Fuzz, RandomBytes) {
-    kvs::Store store;
+    kvs::Server server;
     for (int i = 0; i < iterations; ++i) {
-        feed(store, random_bytes(64));
+        feed(server, random_bytes(64));
     }
-    EXPECT_TRUE(memory_accounting_holds(store));
+    EXPECT_TRUE(memory_accounting_holds(server.store()));
 }
 
 TEST(Fuzz, TruncatedCommands) {
-    kvs::Store store;
+    kvs::Server server;
     for (int i = 0; i < iterations; ++i) {
         const std::string& command =
             valid_commands()[static_cast<std::size_t>(pick(0, static_cast<int>(valid_commands().size()) - 1))];
-        feed(store, command.substr(0, static_cast<std::size_t>(pick(0, static_cast<int>(command.size())))));
+        feed(server, command.substr(0, static_cast<std::size_t>(pick(0, static_cast<int>(command.size())))));
     }
-    EXPECT_TRUE(memory_accounting_holds(store));
+    EXPECT_TRUE(memory_accounting_holds(server.store()));
 }
 
 TEST(Fuzz, VeryLongKeysAndValues) {
-    kvs::Store store(1 << 20);   // предел в мегабайт: длинные записи упрутся в него
+    kvs::Server server(kvs::Server::Options{1 << 20, std::nullopt});   // предел в мегабайт
     for (int i = 0; i < iterations; ++i) {
         const std::string key(static_cast<std::size_t>(pick(1, 20000)), 'k');
         const std::string value(static_cast<std::size_t>(pick(1, 20000)), 'v');
-        feed(store, "SET " + key + std::to_string(i) + ' ' + value);
-        feed(store, "GET " + key + std::to_string(i));
+        feed(server, "SET " + key + std::to_string(i) + ' ' + value);
+        feed(server, "GET " + key + std::to_string(i));
     }
-    EXPECT_TRUE(memory_accounting_holds(store));
-    EXPECT_LE(store.used_bytes(), std::size_t{1} << 20);
+    EXPECT_TRUE(memory_accounting_holds(server.store()));
+    EXPECT_LE(server.store().used_bytes(), std::size_t{1} << 20);
 }
 
 TEST(Fuzz, InvalidUtf8) {
-    kvs::Store store;
+    kvs::Server server;
     const std::vector<std::string> broken = {"\xff", "\xc3", "\xe2\x82", "\xf0\x9f\x98",
                                              "\xc0\xaf", "\xed\xa0\x80"};
     for (int i = 0; i < iterations; ++i) {
         const std::string& bad = broken[static_cast<std::size_t>(pick(0, 5))];
-        feed(store, "SET k" + bad + ' ' + bad + "value" + bad);
-        feed(store, "GET k" + bad);
+        feed(server, "SET k" + bad + ' ' + bad + "value" + bad);
+        feed(server, "GET k" + bad);
     }
-    EXPECT_TRUE(memory_accounting_holds(store));
+    EXPECT_TRUE(memory_accounting_holds(server.store()));
 }
 
 TEST(Fuzz, NumbersAtTheEdge) {
-    kvs::Store store;
+    kvs::Server server;
     const std::vector<std::string> edges = {"9223372036854775807", "-9223372036854775808",
                                             "9223372036854775808", "-1", "0", "1",
                                             "99999999999999999999", "1e9", "0x10", "+5"};
     for (int i = 0; i < iterations; ++i) {
-        feed(store, "INCR n " + edges[static_cast<std::size_t>(pick(0, 9))]);
+        feed(server, "INCR n " + edges[static_cast<std::size_t>(pick(0, 9))]);
     }
-    EXPECT_TRUE(memory_accounting_holds(store));
+    EXPECT_TRUE(memory_accounting_holds(server.store()));
 }

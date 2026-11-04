@@ -36,7 +36,7 @@
 #include <vector>
 
 #include "chat/chat_store.hpp"
-#include "chat/handler.hpp"
+#include "chat/server.hpp"
 #include "chat/validate.hpp"
 
 namespace {
@@ -80,15 +80,20 @@ const std::vector<std::string>& valid_commands() {
 void check_invariants(const chat::ChatStore& store) {
     store.for_each_room([&store](const std::string& room, const chat::History& history) {
         EXPECT_FALSE(chat::room_name_problem(room).has_value()) << "bad room: " << room;
-        for (const std::string& nick : store.members(room)->get()) {
-            EXPECT_FALSE(chat::nick_problem(nick).has_value()) << "bad nick: " << nick;
+        // Результат members — сначала в переменную. Цикл по *store.members(room)
+        // обходил бы временный optional, уничтоженный до начала цикла: время
+        // жизни временного объекта в заголовке range-for продлевается только
+        // с C++23. Санитайзер поймал ровно это — висячую ссылку этапа 2.
+        const auto members = store.members(room);
+        for (const auto& user : *members) {
+            EXPECT_FALSE(chat::nick_problem(user->nick()).has_value()) << "bad nick: " << user->nick();
         }
-        for (const chat::Message& message : history) {
-            const std::string text = message.to_string();
+        for (const chat::MessagePtr& message : history) {
+            const std::string text = message->to_string();
             EXPECT_TRUE(chat::is_valid_utf8(text)) << "invalid UTF-8 in " << room;
             EXPECT_LE(text.size(), chat::max_line_length) << "huge message in " << room;
-            if (const auto* const body = message.get_if<chat::TextBody>()) {
-                EXPECT_FALSE(chat::text_problem(body->text).has_value())
+            if (const auto* const body = dynamic_cast<const chat::TextMessage*>(message.get())) {
+                EXPECT_FALSE(chat::text_problem(body->text()).has_value())
                     << "bad text in " << room;
             }
         }
@@ -97,19 +102,19 @@ void check_invariants(const chat::ChatStore& store) {
 
 // Площадка: две комнаты, в которых сессия уже состоит, и несколько сообщений.
 struct Arena {
-    chat::ChatStore store;
-    chat::Session session{"fuzzer"};
+    chat::Server server;
+    chat::Session session = server.login("fuzzer");
+    const chat::ChatStore& store = server.store();
 
     Arena() {
-        store.register_nick(session.nick);
         for (const char* const line : {"/join #general", "/join #a", "/join #b",
                                        "/msg #general hello", "/msg #general :fire:"}) {
-            static_cast<void>(chat::handle(store, session, line));
+            static_cast<void>(server.handle(session, line));
         }
     }
 
     void feed(const std::string& line) {
-        const chat::Response response = chat::handle(store, session, line);
+        const chat::Response response = server.handle(session, line);
         EXPECT_FALSE(response.text.empty()) << "no response to: " << line;
     }
 };

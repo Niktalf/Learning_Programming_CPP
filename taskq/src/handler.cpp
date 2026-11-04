@@ -27,6 +27,8 @@ namespace {
         return "no such queue: " + e.queue() + " (use CREATE)";
     } catch (const UnknownTaskError& e) {
         return "no such task: " + std::to_string(e.id());
+    } catch (const UnknownWorkerError& e) {
+        return "no such worker: " + e.worker() + " (use WORKER)";
     } catch (const InvalidTransitionError& e) {
         return "task " + std::to_string(e.id()) + " is " + std::string(name(e.from())) +
                ", cannot become " + std::string(name(e.to()));

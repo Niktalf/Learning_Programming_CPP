@@ -25,7 +25,12 @@ struct IncrCommand   { std::string_view key; std::int64_t by; };
 // записаны все пары, либо ни одной.
 struct MsetCommand   { std::vector<std::pair<std::string_view, std::string_view>> pairs; };
 
-using Command = std::variant<SetCommand, GetCommand, DelCommand,
-                             ExistsCommand, TypeCommand, IncrCommand, MsetCommand>;
+// Этап 4: операции над списком — чтобы у ListValue было применение.
+struct RpushCommand  { std::string_view key; std::string_view item; };
+struct LlenCommand   { std::string_view key; };
+
+using Command = std::variant<SetCommand, GetCommand, DelCommand, ExistsCommand,
+                             TypeCommand, IncrCommand, MsetCommand, RpushCommand,
+                             LlenCommand>;
 
 }  // namespace kvs

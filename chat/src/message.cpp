@@ -1,48 +1,49 @@
 #include "chat/message.hpp"
 
-#include <sstream>
+#include <memory>
+#include <string>
 #include <type_traits>
-
-#include "chat/overloaded.hpp"
+#include <utility>
 
 namespace chat {
 
-static_assert(std::is_nothrow_move_constructible_v<Message>,
-              "Message must be nothrow move constructible");
-static_assert(std::is_copy_constructible_v<Message>, "Message must be copy constructible");
-static_assert(std::is_nothrow_destructible_v<Message>,
-              "Message must be nothrow destructible");
+// Удаление через указатель на базу корректно только с виртуальным деструктором.
+static_assert(std::has_virtual_destructor_v<IMessage>, "IMessage needs a virtual destructor");
+// Рассылка переносит копии в истории перемещением unique_ptr; оно не бросает.
+static_assert(std::is_nothrow_move_constructible_v<MessagePtr>,
+              "moving a message pointer must not throw");
 
-std::string_view Message::type_name() const noexcept {
-    return std::visit(overloaded{
-                          [](const TextBody&) -> std::string_view { return "text"; },
-                          [](const SystemNotice&) -> std::string_view { return "notice"; },
-                          [](const Reaction&) -> std::string_view { return "reaction"; },
-                      },
-                      body_);
+// clone всех наследников устроен одинаково: копирующий конструктор
+// конкретного класса, результат — в unique_ptr на базу. make_unique, а не
+// new: ни одного new в рабочем коде.
+
+MessagePtr TextMessage::clone() const {
+    return std::make_unique<TextMessage>(*this);
 }
 
-std::string Message::to_string() const {
-    // std::format появится вместе с C++23 на этапе 5, пока форматируем потоком.
-    return std::visit(overloaded{
-                          [](const TextBody& body) { return body.text; },
-                          [](const SystemNotice& body) { return "* " + body.text; },
-                          [](const Reaction& body) {
-                              std::ostringstream out;
-                              out << ':' << body.emoji << ": x" << body.count;
-                              return out.str();
-                          },
-                      },
-                      body_);
+MessagePtr SystemMessage::clone() const {
+    return std::make_unique<SystemMessage>(*this);
 }
 
-std::size_t Message::size() const noexcept {
-    return std::visit(overloaded{
-                          [](const TextBody& body) { return body.text.size(); },
-                          [](const SystemNotice& body) { return body.text.size(); },
-                          [](const Reaction& body) { return body.emoji.size(); },
-                      },
-                      body_);
+std::string ReactionMessage::to_string() const {
+    // std::format появится вместе с C++23 на этапе 5.
+    return ':' + emoji_ + ": x" + std::to_string(count_);
+}
+
+MessagePtr ReactionMessage::clone() const {
+    return std::make_unique<ReactionMessage>(*this);
+}
+
+MessagePtr make_text(std::string author, std::string text) {
+    return std::make_unique<TextMessage>(std::move(author), std::move(text));
+}
+
+MessagePtr make_notice(std::string author, std::string text) {
+    return std::make_unique<SystemMessage>(std::move(author), std::move(text));
+}
+
+MessagePtr make_reaction(std::string author, std::string emoji) {
+    return std::make_unique<ReactionMessage>(std::move(author), std::move(emoji));
 }
 
 }  // namespace chat

@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <memory>
 #include <new>
 #include <string>
 #include <string_view>
@@ -12,6 +13,8 @@
 #include <vector>
 
 #include "taskq/errors.hpp"
+#include "taskq/payload.hpp"
+#include "taskq/task.hpp"
 #include "taskq/task_store.hpp"
 
 namespace {
@@ -140,4 +143,72 @@ TEST(Guarantee, CommitIsNoexcept) {
     // оно не бросает.
     EXPECT_TRUE(std::is_nothrow_move_assignable_v<taskq::Task>);
     EXPECT_TRUE(std::is_nothrow_move_constructible_v<taskq::Task>);
+}
+
+// --- Этап 4: та же гарантия на настоящих задачах с полиморфным телом -------
+//
+// После перехода на unique_ptr копирование задачи держится на clone тела.
+// Тест подставляет тело, чей clone бросает на N-м вызове, и повторяет перебор
+// точек броска уже на настоящем TaskStore.
+
+namespace {
+
+int& clone_countdown() {
+    static int n = -1;
+    return n;
+}
+
+class ThrowingClone final : public taskq::IPayload {
+public:
+    explicit ThrowingClone(std::string text) : text_(std::move(text)) {}
+    ThrowingClone(const ThrowingClone&) = default;
+    ThrowingClone& operator=(const ThrowingClone&) = delete;
+
+    [[nodiscard]] std::string_view type_name() const noexcept override { return "throwing"; }
+    [[nodiscard]] std::string to_string() const override { return text_; }
+    [[nodiscard]] std::size_t size() const noexcept override { return text_.size(); }
+    [[nodiscard]] taskq::PayloadPtr clone() const override {
+        if (clone_countdown() > 0 && --clone_countdown() == 0) {
+            throw std::bad_alloc();
+        }
+        return std::make_unique<ThrowingClone>(*this);
+    }
+    [[nodiscard]] bool equals(const taskq::IPayload& other) const noexcept override {
+        const auto* const same = dynamic_cast<const ThrowingClone*>(&other);
+        return same != nullptr && same->text_ == text_;
+    }
+
+private:
+    std::string text_;
+};
+
+taskq::Task throwing_task(taskq::TaskId id, std::string text) {
+    return taskq::Task(id, std::make_unique<ThrowingClone>(std::move(text)));
+}
+
+}  // namespace
+
+TEST(Guarantee, BatchWithPolymorphicPayloads) {
+    std::vector<std::pair<std::string_view, taskq::Task>> batch;
+    batch.emplace_back("a", throwing_task(11, "n1"));
+    batch.emplace_back("b", throwing_task(12, "n2"));
+    batch.emplace_back("a", throwing_task(13, "n3"));
+
+    // Две копии очередей по одной старой задаче и три копии новых.
+    constexpr int clones_in_successful_batch = 5;
+    for (int nth = 1; nth <= clones_in_successful_batch; ++nth) {
+        taskq::TaskStore store;
+        store.create_queue("a");
+        store.create_queue("b");
+        store.submit("a", throwing_task(1, "old"));
+        store.submit("b", throwing_task(2, "old"));
+
+        clone_countdown() = nth;
+        EXPECT_THROW(store.submit_batch(batch), std::bad_alloc) << "clone " << nth;
+        clone_countdown() = -1;
+
+        EXPECT_EQ(store.size("a"), 1u) << "clone " << nth;
+        EXPECT_EQ(store.size("b"), 1u) << "clone " << nth;
+        EXPECT_EQ(store.peek("a")->to_string(), std::string("old")) << "clone " << nth;
+    }
 }

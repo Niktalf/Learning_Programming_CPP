@@ -1,9 +1,10 @@
 cmake_minimum_required(VERSION 3.28)
 project(chat LANGUAGES CXX)
 
-# Этап 3 идёт под C++17: исключения, гарантии безопасности и noexcept
-# укладываются в семнадцатый стандарт. std::expected появился только в C++23,
-# поэтому второй путь обработки ошибок построен на собственном Result.
+# Этапы 2–4 идут под C++17. На этапе 3 разбираются исключения, на этапе 4 —
+# RAII и умные указатели; всё это целиком укладывается в семнадцатый стандарт.
+# std::expected появился только в C++23, поэтому второй путь обработки ошибок
+# этапа 3 построен на собственном Result.
 #
 # Стандарт поднимается вместе с курсом: этап 1 был под 14, этапы 3–4 остаются
 # на 17, с этапа 5 — C++23. Так компилятор сам не даёт применить то, чего ещё
@@ -31,7 +32,8 @@ add_library(chat_core
         src/parser.cpp
         src/executor.cpp
         src/errors.cpp
-        src/handler.cpp
+        src/server.cpp
+        src/log.cpp
         src/validate.cpp
         src/owning_buffer.cpp)
 target_include_directories(chat_core PUBLIC include)
@@ -53,10 +55,13 @@ add_executable(chat_tests
         tests/test_errors.cpp
         tests/test_validate.cpp
         tests/test_guarantee.cpp
-        tests/test_handler.cpp
+        tests/test_server.cpp
         tests/test_result.cpp
-        tests/test_fuzz.cpp)
-target_include_directories(chat_tests PRIVATE tests)
+        tests/test_fuzz.cpp
+        tests/test_members.cpp
+        tests/test_log.cpp
+        tests/test_cycle.cpp)
+target_include_directories(chat_tests PRIVATE tests tools)
 target_link_libraries(chat_tests PRIVATE chat_core chat_warnings GTest::gtest_main)
 
 # Звёздочка этапа 1: порядок конструкторов при добавлении в std::vector.
@@ -86,3 +91,17 @@ target_link_libraries(chat_error_cost PRIVATE chat_core chat_warnings)
 # Учебная демонстрация висячего представления. В обычную сборку не входит.
 add_executable(chat_dangling_demo EXCLUDE_FROM_ALL tests/dangling_demo.cpp)
 target_link_libraries(chat_dangling_demo PRIVATE chat_core chat_warnings)
+
+# Звёздочка этапа 4: цикл из shared_ptr. chat_cycle_demo — исправленный
+# вариант, комната держит участников через weak_ptr; входит в обычную сборку.
+# chat_cycle_leak — тот же код под флагом CHAT_LEAKING_CYCLE, комната держит
+# участников через shared_ptr. В обычную сборку не входит: программа намеренно
+# теряет память. Запускать под санитайзером адресов, он покажет утечку.
+add_executable(chat_cycle_demo tools/cycle_demo.cpp)
+target_include_directories(chat_cycle_demo PRIVATE tools)
+target_link_libraries(chat_cycle_demo PRIVATE chat_warnings)
+
+add_executable(chat_cycle_leak EXCLUDE_FROM_ALL tools/cycle_demo.cpp)
+target_include_directories(chat_cycle_leak PRIVATE tools)
+target_compile_definitions(chat_cycle_leak PRIVATE CHAT_LEAKING_CYCLE)
+target_link_libraries(chat_cycle_leak PRIVATE chat_warnings)

@@ -3,6 +3,8 @@ project(kvs LANGUAGES CXX)
 
 # Этапы 2–4 идут под C++17. На этапе 3 разбираются исключения, на этапе 4 —
 # RAII и умные указатели; всё это целиком укладывается в семнадцатый стандарт.
+# Единственное, чего здесь не хватает, — make_unique_for_overwrite из C++20,
+# см. комментарий в src/owning_buffer.cpp.
 #
 # Стандарт поднимается вместе с курсом: этап 1 был под 14, этапы 3–4 остаются
 # на 17, с этапа 5 — C++23. Так компилятор сам не даёт применить то, чего ещё
@@ -25,9 +27,13 @@ FetchContent_Declare(googletest
 FetchContent_MakeAvailable(googletest)
 
 add_library(kvs_core
+        src/ivalue.cpp
         src/value.cpp
         src/errors.cpp
-        src/handler.cpp
+        src/log.cpp
+        src/file.cpp
+        src/request_cache.cpp
+        src/server.cpp
         src/lexer.cpp
         src/parser.cpp
         src/executor.cpp
@@ -50,9 +56,15 @@ add_executable(kvs_tests
         tests/test_lifetime.cpp
         tests/test_errors.cpp
         tests/test_guarantee.cpp
-        tests/test_handler.cpp
+        tests/test_server.cpp
         tests/test_result.cpp
-        tests/test_fuzz.cpp)
+        tests/test_fuzz.cpp
+        tests/test_hierarchy.cpp
+        tests/test_log.cpp
+        tests/test_file.cpp
+        tests/test_cache.cpp
+        tests/test_cycle.cpp)
+target_include_directories(kvs_tests PRIVATE tools)
 target_link_libraries(kvs_tests PRIVATE kvs_core kvs_warnings GTest::gtest_main)
 
 # Звёздочка: порядок вызовов конструкторов при вставке в std::map.
@@ -84,3 +96,17 @@ gtest_discover_tests(kvs_alloc_tests)
 # санитайзером адресов.
 add_executable(kvs_dangling_demo EXCLUDE_FROM_ALL tests/dangling_demo.cpp)
 target_link_libraries(kvs_dangling_demo PRIVATE kvs_core kvs_warnings)
+
+# Звёздочка этапа 4: цикл из shared_ptr. kvs_cycle_demo — исправленный
+# вариант с обратной ссылкой на weak_ptr, входит в обычную сборку.
+# kvs_cycle_leak — тот же код с обратной ссылкой на shared_ptr, собранный под
+# флагом KVS_LEAKING_CYCLE. В обычную сборку не входит: программа намеренно
+# теряет память. Запускать под санитайзером адресов, он покажет утечку.
+add_executable(kvs_cycle_demo tools/cycle_demo.cpp)
+target_include_directories(kvs_cycle_demo PRIVATE tools)
+target_link_libraries(kvs_cycle_demo PRIVATE kvs_warnings)
+
+add_executable(kvs_cycle_leak EXCLUDE_FROM_ALL tools/cycle_demo.cpp)
+target_include_directories(kvs_cycle_leak PRIVATE tools)
+target_compile_definitions(kvs_cycle_leak PRIVATE KVS_LEAKING_CYCLE)
+target_link_libraries(kvs_cycle_leak PRIVATE kvs_warnings)

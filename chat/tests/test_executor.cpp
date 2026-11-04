@@ -36,6 +36,13 @@ bool root_is(const std::exception_ptr& error) {
     }
 }
 
+// Этап 4: в комнату входит пользователь из реестра, поэтому каждая сессия
+// начинается с регистрации ника.
+Session login(ChatStore& store, const std::string& nick) {
+    store.register_user(nick);
+    return Session{nick};
+}
+
 template <class E>
 bool fails_with(ChatStore& store, Session& session, const std::string& text) {
     try {
@@ -50,7 +57,7 @@ bool fails_with(ChatStore& store, Session& session, const std::string& text) {
 
 TEST(Executor, JoinMessageHistory) {
     ChatStore store;
-    Session alice{"alice"};
+    Session alice = login(store, "alice");
 
     EXPECT_TRUE(run(store, alice, "/join #general").ok);
     EXPECT_TRUE(run(store, alice, "/msg #general привет всем").ok);
@@ -60,8 +67,8 @@ TEST(Executor, JoinMessageHistory) {
 
 TEST(Executor, MessageRequiresMembership) {
     ChatStore store;
-    Session alice{"alice"};
-    Session bob{"bob"};
+    Session alice = login(store, "alice");
+    Session bob = login(store, "bob");
     run(store, alice, "/join #general");
 
     EXPECT_TRUE(fails_with<chat::NotMemberError>(store, bob, "/msg #general hi"));
@@ -70,9 +77,9 @@ TEST(Executor, MessageRequiresMembership) {
 
 TEST(Executor, WhoListsMembersInOrder) {
     ChatStore store;
-    Session carol{"carol"};
-    Session alice{"alice"};
-    Session bob{"bob"};
+    Session carol = login(store, "carol");
+    Session alice = login(store, "alice");
+    Session bob = login(store, "bob");
     run(store, carol, "/join #general");
     run(store, alice, "/join #general");
     run(store, bob, "/join #general");
@@ -84,15 +91,15 @@ TEST(Executor, WhoListsMembersInOrder) {
 
 TEST(Executor, LeaveWithoutJoinIsAnError) {
     ChatStore store;
-    Session alice{"alice"};
-    Session bob{"bob"};
+    Session alice = login(store, "alice");
+    Session bob = login(store, "bob");
     run(store, alice, "/join #general");
     EXPECT_TRUE(fails_with<chat::NotMemberError>(store, bob, "/leave #general"));
 }
 
 TEST(Executor, TypeReportsAlternative) {
     ChatStore store;
-    Session alice{"alice"};
+    Session alice = login(store, "alice");
     run(store, alice, "/join #general");
     run(store, alice, "/msg #general hello");
     run(store, alice, "/msg #general :thumbsup:");
@@ -105,7 +112,7 @@ TEST(Executor, TypeReportsAlternative) {
 
 TEST(Executor, ReactCountsOnlyReactions) {
     ChatStore store;
-    Session alice{"alice"};
+    Session alice = login(store, "alice");
     run(store, alice, "/join #general");
     run(store, alice, "/msg #general hello");
     run(store, alice, "/msg #general :thumbsup:");
@@ -117,7 +124,7 @@ TEST(Executor, ReactCountsOnlyReactions) {
 
 TEST(Executor, ReactOverflowIsAnErrorNotUndefinedBehaviour) {
     ChatStore store;
-    Session alice{"alice"};
+    Session alice = login(store, "alice");
     run(store, alice, "/join #general");
     run(store, alice, "/msg #general :fire:");   // счётчик 1
 
@@ -130,8 +137,8 @@ TEST(Executor, ReactOverflowIsAnErrorNotUndefinedBehaviour) {
 
 TEST(Executor, TopicShowAndSet) {
     ChatStore store;
-    Session alice{"alice"};
-    Session bob{"bob"};
+    Session alice = login(store, "alice");
+    Session bob = login(store, "bob");
     run(store, alice, "/join #general");
 
     EXPECT_EQ(run(store, alice, "/topic #general").text, std::string("(no topic)"));
@@ -142,7 +149,7 @@ TEST(Executor, TopicShowAndSet) {
 
 TEST(Executor, HistoryRespectsLimit) {
     ChatStore store;
-    Session alice{"alice"};
+    Session alice = login(store, "alice");
     run(store, alice, "/join #general");
     for (int i = 0; i < 5; ++i) {
         run(store, alice, "/msg #general m" + std::to_string(i));
@@ -154,7 +161,7 @@ TEST(Executor, HistoryRespectsLimit) {
 
 TEST(Executor, MsgToSeveralRoomsReachesAll) {
     ChatStore store;
-    Session alice{"alice"};
+    Session alice = login(store, "alice");
     run(store, alice, "/join #a");
     run(store, alice, "/join #b");
 
@@ -165,8 +172,8 @@ TEST(Executor, MsgToSeveralRoomsReachesAll) {
 
 TEST(Executor, MsgFailingInOneRoomPostsNowhere) {
     ChatStore store;
-    Session alice{"alice"};
-    Session bob{"bob"};
+    Session alice = login(store, "alice");
+    Session bob = login(store, "bob");
     run(store, alice, "/join #a");
     run(store, alice, "/join #b");
     run(store, bob, "/join #c");   // alice в #c не состоит
@@ -179,9 +186,8 @@ TEST(Executor, MsgFailingInOneRoomPostsNowhere) {
 
 TEST(Executor, NickChangesSessionAndMembership) {
     ChatStore store;
-    store.register_nick("alice");
-    store.register_nick("bob");
-    Session alice{"alice"};
+    Session alice = login(store, "alice");
+    login(store, "bob");   // ник bob занят
     run(store, alice, "/join #general");
 
     EXPECT_EQ(run(store, alice, "/nick alicia").text, std::string("OK, you are alicia"));
@@ -194,7 +200,7 @@ TEST(Executor, NickChangesSessionAndMembership) {
 
 TEST(Executor, ErrorCarriesCommandContext) {
     ChatStore store;
-    Session alice{"alice"};
+    Session alice = login(store, "alice");
     try {
         static_cast<void>(run(store, alice, "/who #absent"));
         ADD_FAILURE() << "must throw";
@@ -203,4 +209,22 @@ TEST(Executor, ErrorCarriesCommandContext) {
         EXPECT_EQ(std::string(e.what()), std::string("while executing /who #absent"));
         EXPECT_TRUE(root_is<chat::UnknownRoomError>(std::current_exception()));
     }
+}
+
+TEST(Executor, UnregisteredUserCannotJoin) {
+    ChatStore store;
+    Session ghost{"ghost"};   // в реестре его нет
+    EXPECT_TRUE(fails_with<chat::UnknownUserError>(store, ghost, "/join #general"));
+}
+
+TEST(Executor, DepartedUserDisappearsFromWho) {
+    ChatStore store;
+    Session alice = login(store, "alice");
+    Session bob = login(store, "bob");
+    run(store, alice, "/join #general");
+    run(store, bob, "/join #general");
+
+    store.release_user("bob");   // на этапе 15 — отключение клиента
+    EXPECT_EQ(run(store, alice, "/who #general").text, std::string("alice"));
+    EXPECT_TRUE(fails_with<chat::NotMemberError>(store, bob, "/msg #general hi"));
 }

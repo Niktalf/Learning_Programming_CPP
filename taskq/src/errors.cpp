@@ -21,6 +21,9 @@ UnknownQueueError::UnknownQueueError(std::string queue)
 UnknownTaskError::UnknownTaskError(TaskId id)
     : TaskQError("no such task: " + std::to_string(id)), id_(id) {}
 
+UnknownWorkerError::UnknownWorkerError(std::string worker)
+    : TaskQError("no such worker: " + worker), worker_(std::move(worker)) {}
+
 InvalidTransitionError::InvalidTransitionError(TaskId id, State from, State to)
     : TaskQError("task " + std::to_string(id) + ": " + std::string(name(from)) + " -> " +
                  std::string(name(to)) + " not allowed"),

@@ -208,17 +208,47 @@ Command parse(const InputLine& input) {
         }
         return std::move(batch).value();
     }
-    if (is(verb, "CREATE") || is(verb, "POLL")) {
+    if (is(verb, "CREATE")) {
         if (argc != 1) {
             fail(arity(verb, "a queue"), line);
         }
         if (const auto problem = queue_name_problem(tokens[1]); problem) {
             fail(*problem, line);
         }
-        if (is(verb, "CREATE")) {
-            return CreateCommand{tokens[1]};
+        return CreateCommand{tokens[1]};
+    }
+    if (is(verb, "POLL")) {
+        if (argc != 1 && argc != 2) {
+            fail(arity(verb, "a queue and an optional worker"), line);
         }
-        return PollCommand{tokens[1]};
+        if (const auto problem = queue_name_problem(tokens[1]); problem) {
+            fail(*problem, line);
+        }
+        if (argc == 1) {
+            return PollCommand{tokens[1], std::nullopt};
+        }
+        if (const auto problem = worker_name_problem(tokens[2]); problem) {
+            fail(*problem, line);
+        }
+        return PollCommand{tokens[1], tokens[2]};
+    }
+    if (is(verb, "WORKER") || is(verb, "GONE")) {
+        if (argc != 1) {
+            fail(arity(verb, "a worker name"), line);
+        }
+        if (const auto problem = worker_name_problem(tokens[1]); problem) {
+            fail(*problem, line);
+        }
+        if (is(verb, "WORKER")) {
+            return WorkerCommand{tokens[1]};
+        }
+        return GoneCommand{tokens[1]};
+    }
+    if (is(verb, "REAP")) {
+        if (argc != 0) {
+            fail(arity(verb, "no arguments"), line);
+        }
+        return ReapCommand{};
     }
 
     // Остальные команды адресуют задачу по номеру.
@@ -305,17 +335,47 @@ Result<Command, ParseError> try_parse(const InputLine& input) {
         }
         return Command{std::move(batch).value()};
     }
-    if (is(verb, "CREATE") || is(verb, "POLL")) {
+    if (is(verb, "CREATE")) {
         if (argc != 1) {
             return failure(arity(verb, "a queue"), line);
         }
         if (const auto problem = queue_name_problem(tokens[1]); problem) {
             return failure(*problem, line);
         }
-        if (is(verb, "CREATE")) {
-            return Command{CreateCommand{tokens[1]}};
+        return Command{CreateCommand{tokens[1]}};
+    }
+    if (is(verb, "POLL")) {
+        if (argc != 1 && argc != 2) {
+            return failure(arity(verb, "a queue and an optional worker"), line);
         }
-        return Command{PollCommand{tokens[1]}};
+        if (const auto problem = queue_name_problem(tokens[1]); problem) {
+            return failure(*problem, line);
+        }
+        if (argc == 1) {
+            return Command{PollCommand{tokens[1], std::nullopt}};
+        }
+        if (const auto problem = worker_name_problem(tokens[2]); problem) {
+            return failure(*problem, line);
+        }
+        return Command{PollCommand{tokens[1], tokens[2]}};
+    }
+    if (is(verb, "WORKER") || is(verb, "GONE")) {
+        if (argc != 1) {
+            return failure(arity(verb, "a worker name"), line);
+        }
+        if (const auto problem = worker_name_problem(tokens[1]); problem) {
+            return failure(*problem, line);
+        }
+        if (is(verb, "WORKER")) {
+            return Command{WorkerCommand{tokens[1]}};
+        }
+        return Command{GoneCommand{tokens[1]}};
+    }
+    if (is(verb, "REAP")) {
+        if (argc != 0) {
+            return failure(arity(verb, "no arguments"), line);
+        }
+        return Command{ReapCommand{}};
     }
 
     const bool by_id = is(verb, "ACK") || is(verb, "FAIL") || is(verb, "RELEASE") ||

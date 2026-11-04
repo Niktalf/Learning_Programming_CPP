@@ -62,23 +62,35 @@ bool is_valid_utf8(std::string_view text) noexcept {
     return true;
 }
 
-std::optional<std::string> queue_name_problem(std::string_view queue) {
-    if (queue.find_first_not_of(' ') == std::string_view::npos) {
-        return std::string("queue name is empty");
+namespace {
+
+[[nodiscard]] std::optional<std::string> name_problem(std::string_view name, const std::string& what) {
+    if (name.find_first_not_of(' ') == std::string_view::npos) {
+        return what + " is empty";
     }
-    if (queue.size() > max_queue_name_length) {
-        return "queue name is longer than " + std::to_string(max_queue_name_length) + " bytes";
+    if (name.size() > max_queue_name_length) {
+        return what + " is longer than " + std::to_string(max_queue_name_length) + " bytes";
     }
-    if (queue.front() == ' ' || queue.back() == ' ') {
-        return std::string("queue name starts or ends with a space");
+    if (name.front() == ' ' || name.back() == ' ') {
+        return what + " starts or ends with a space";
     }
-    for (const char c : queue) {
+    for (const char c : name) {
         const auto byte = static_cast<unsigned char>(c);
         if (byte < 0x20 || byte == 0x7F) {
-            return std::string("queue name contains control characters");
+            return what + " contains control characters";
         }
     }
     return std::nullopt;
+}
+
+}  // namespace
+
+std::optional<std::string> queue_name_problem(std::string_view queue) {
+    return name_problem(queue, "queue name");
+}
+
+std::optional<std::string> worker_name_problem(std::string_view worker) {
+    return name_problem(worker, "worker name");
 }
 
 }  // namespace taskq

@@ -24,6 +24,9 @@ NotMemberError::NotMemberError(std::string room, std::string nick)
 NicknameTakenError::NicknameTakenError(std::string nick)
     : ChatError("nickname already in use: " + nick), nick_(std::move(nick)) {}
 
+UnknownUserError::UnknownUserError(std::string nick)
+    : ChatError("no such user: " + nick), nick_(std::move(nick)) {}
+
 MessageNotFoundError::MessageNotFoundError(std::string room, std::size_t index)
     : ChatError("no message " + std::to_string(index) + " in " + room),
       room_(std::move(room)),

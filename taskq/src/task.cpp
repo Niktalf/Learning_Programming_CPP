@@ -1,51 +1,15 @@
 #include "taskq/task.hpp"
 
-#include <sstream>
 #include <type_traits>
-
-#include "taskq/overloaded.hpp"
 
 namespace taskq {
 
-static_assert(std::is_nothrow_move_constructible_v<Task>,
-              "Task must be nothrow move constructible");
+// Свойства, на которых держатся очереди и сильная гарантия пакетной
+// постановки. Перемещение не бросает: std::vector и POLL полагаются на это.
+static_assert(std::is_nothrow_move_constructible_v<Task>, "Task must be nothrow move constructible");
+static_assert(std::is_nothrow_move_assignable_v<Task>, "Task must be nothrow move assignable");
+// Копирование есть, но бросать может: clone выделяет память.
 static_assert(std::is_copy_constructible_v<Task>, "Task must be copy constructible");
-static_assert(std::is_nothrow_destructible_v<Task>, "Task must be nothrow destructible");
-
-std::string_view Task::type_name() const noexcept {
-    return std::visit(overloaded{
-                          [](const TextPayload&) -> std::string_view { return "text"; },
-                          [](const NumericPayload&) -> std::string_view { return "number"; },
-                          [](const BinaryPayload&) -> std::string_view { return "binary"; },
-                      },
-                      payload_);
-}
-
-std::string Task::to_string() const {
-    // std::format появится вместе с C++23 на этапе 5, пока форматируем потоком.
-    return std::visit(overloaded{
-                          [](const TextPayload& payload) { return payload.command; },
-                          [](const NumericPayload& payload) {
-                              std::ostringstream out;
-                              out << payload.value;
-                              return out.str();
-                          },
-                          [](const BinaryPayload& payload) {
-                              std::ostringstream out;
-                              out << '<' << payload.bytes.size() << " bytes>";
-                              return out.str();
-                          },
-                      },
-                      payload_);
-}
-
-std::size_t Task::size() const noexcept {
-    return std::visit(overloaded{
-                          [](const TextPayload& payload) { return payload.command.size(); },
-                          [](const NumericPayload&) { return sizeof(std::int64_t); },
-                          [](const BinaryPayload& payload) { return payload.bytes.size(); },
-                      },
-                      payload_);
-}
+static_assert(!std::is_nothrow_copy_constructible_v<Task>, "copying a Task allocates and may throw");
 
 }  // namespace taskq

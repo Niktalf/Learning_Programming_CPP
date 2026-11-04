@@ -33,4 +33,7 @@ inline constexpr std::size_t max_queue_name_length = 64;
 // длиннее 64 байт. Пробелы внутри разрешены — "build tasks" в кавычках.
 [[nodiscard]] std::optional<std::string> queue_name_problem(std::string_view queue);
 
+// Имя воркера — по тем же правилам, что имя очереди.
+[[nodiscard]] std::optional<std::string> worker_name_problem(std::string_view worker);
+
 }  // namespace taskq

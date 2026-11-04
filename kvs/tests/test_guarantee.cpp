@@ -1,14 +1,18 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <memory>
 #include <new>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "kvs/errors.hpp"
+#include "kvs/ivalue.hpp"
 #include "kvs/store.hpp"
+#include "kvs/value.hpp"
 
 namespace {
 
@@ -156,4 +160,71 @@ TEST(Guarantee, DeleteReleasesMemory) {
     EXPECT_EQ(store.used_bytes(), 0u);
     store.set("m", ThrowOnNthCopy("12345678"));   // место освободилось
     EXPECT_TRUE(store.contains("m"));
+}
+
+// --- Этап 4: та же гарантия на настоящих полиморфных значениях -------------
+//
+// После перехода на unique_ptr копирование хранилища держится на clone. Если
+// бы Value копировался поверхностно — или не копировался вовсе, — MSET
+// потерял бы сильную гарантию. Тест подставляет значение, чей clone бросает
+// на N-м вызове, и повторяет перебор точек броска.
+
+namespace {
+
+int& clone_countdown() {
+    static int n = -1;
+    return n;
+}
+
+class ThrowingClone final : public kvs::IValue {
+public:
+    explicit ThrowingClone(std::string text) : text_(std::move(text)) {}
+    ThrowingClone(const ThrowingClone&) = default;
+    ThrowingClone& operator=(const ThrowingClone&) = delete;
+
+    [[nodiscard]] std::string_view type_name() const noexcept override { return "throwing"; }
+    [[nodiscard]] std::string to_string() const override { return text_; }
+    [[nodiscard]] std::size_t size() const noexcept override { return text_.size(); }
+    [[nodiscard]] std::unique_ptr<kvs::IValue> clone() const override {
+        if (clone_countdown() > 0 && --clone_countdown() == 0) {
+            throw std::bad_alloc();
+        }
+        return std::make_unique<ThrowingClone>(*this);
+    }
+    [[nodiscard]] bool equals(const kvs::IValue& other) const noexcept override {
+        const auto* const same = dynamic_cast<const ThrowingClone*>(&other);
+        return same != nullptr && same->text_ == text_;
+    }
+
+private:
+    std::string text_;
+};
+
+kvs::Value throwing(std::string text) {
+    return kvs::Value(std::make_unique<ThrowingClone>(std::move(text)));
+}
+
+}  // namespace
+
+TEST(Guarantee, MsetWithPolymorphicValues) {
+    std::vector<std::pair<std::string, kvs::Value>> pairs;
+    pairs.emplace_back("a", throwing("new-a"));
+    pairs.emplace_back("c", throwing("new-c"));
+    pairs.emplace_back("d", throwing("new-d"));
+
+    // Два clone на копию таблицы и по одному на каждую из трёх пар.
+    constexpr int clones_in_successful_mset = 5;
+    for (int nth = 1; nth <= clones_in_successful_mset; ++nth) {
+        kvs::Store store;
+        store.set("a", throwing("old-a"));
+        store.set("b", throwing("old-b"));
+
+        clone_countdown() = nth;
+        EXPECT_THROW(store.mset(pairs), std::bad_alloc) << "clone " << nth;
+        clone_countdown() = -1;
+
+        EXPECT_EQ(store.size(), 2u) << "clone " << nth;
+        EXPECT_EQ(store.get("a")->to_string(), std::string("old-a")) << "clone " << nth;
+        EXPECT_FALSE(store.contains("c")) << "clone " << nth;
+    }
 }

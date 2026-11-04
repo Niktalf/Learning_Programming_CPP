@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <exception>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -31,11 +32,11 @@ namespace {
     return true;
 }
 
-[[nodiscard]] Body make_body(std::string_view text) {
+[[nodiscard]] MessagePtr make_message(const std::string& author, std::string_view text) {
     if (is_reaction(text)) {
-        return Reaction{std::string(text.substr(1, text.size() - 2)), 1};
+        return make_reaction(author, std::string(text.substr(1, text.size() - 2)));
     }
-    return TextBody{std::string(text)};
+    return make_text(author, std::string(text));
 }
 
 // Комната существует, и сессия в ней состоит. Одна точка, где отказ
@@ -96,15 +97,14 @@ Response run_command(ChatStore& store, Session& session, const Command& command)
         overloaded{
             [&](const JoinCommand& c) {
                 if (store.join(c.room, session.nick)) {
-                    store.post(c.room,
-                               Message(session.nick, Body{SystemNotice{session.nick + " joined"}}));
+                    store.post(c.room, make_notice(session.nick, session.nick + " joined"));
                 }
                 return Response{true, "OK"};
             },
             [&](const LeaveCommand& c) {
                 require_member(store, c.room, session);
                 store.leave(c.room, session.nick);
-                store.post(c.room, Message(session.nick, Body{SystemNotice{session.nick + " left"}}));
+                store.post(c.room, make_notice(session.nick, session.nick + " left"));
                 return Response{true, "OK"};
             },
             [&](const MsgCommand& c) {
@@ -113,7 +113,7 @@ Response run_command(ChatStore& store, Session& session, const Command& command)
                 for (const std::string_view room : c.rooms) {
                     require_member(store, room, session);
                 }
-                store.post_many(c.rooms, Message(session.nick, make_body(c.text)));
+                store.post_many(c.rooms, make_message(session.nick, c.text));
                 return Response{true, "OK"};
             },
             [&](const WhoCommand& c) {
@@ -122,8 +122,8 @@ Response run_command(ChatStore& store, Session& session, const Command& command)
                     throw UnknownRoomError(std::string(c.room));
                 }
                 std::ostringstream out;
-                for (const std::string& nick : members->get()) {
-                    out << nick << '\n';
+                for (const std::shared_ptr<User>& user : *members) {
+                    out << user->nick() << '\n';
                 }
                 return Response{true, without_last_newline(out.str(), "(empty)")};
             },
@@ -136,7 +136,7 @@ Response run_command(ChatStore& store, Session& session, const Command& command)
                 const std::size_t from = messages.size() > c.limit ? messages.size() - c.limit : 0;
                 std::ostringstream out;
                 for (std::size_t i = from; i < messages.size(); ++i) {
-                    out << i << ": <" << messages[i].author() << "> " << messages[i].to_string()
+                    out << i << ": <" << messages[i]->author() << "> " << messages[i]->to_string()
                         << '\n';
                 }
                 return Response{true, without_last_newline(out.str(), "(empty)")};
@@ -149,7 +149,7 @@ Response run_command(ChatStore& store, Session& session, const Command& command)
                 if (!message) {
                     throw MessageNotFoundError(std::string(c.room), c.index);
                 }
-                return Response{true, std::string(message->get().type_name())};
+                return Response{true, std::string(message->get()->type_name())};
             },
             [&](const ReactCommand& c) {
                 if (!store.contains(c.room)) {
@@ -159,18 +159,19 @@ Response run_command(ChatStore& store, Session& session, const Command& command)
                 if (!message) {
                     throw MessageNotFoundError(std::string(c.room), c.index);
                 }
-                // Этап 2 проверял вид через get_if и возвращал отказ. Теперь
-                // неверный вид — ошибка с контекстом в полях: на этапе 16 по
-                // ней выберется код ответа.
-                Reaction* const reaction = message->get().get_if<Reaction>();
+                // Этап 4: вид сообщения определяет класс, проверка —
+                // dynamic_cast: указатель или nullptr. Неверный вид — ошибка
+                // с контекстом в полях.
+                IMessage& target = *message->get();
+                auto* const reaction = dynamic_cast<ReactionMessage*>(&target);
                 if (reaction == nullptr) {
                     throw TypeMismatchError(std::string(c.room), c.index, "reaction",
-                                            std::string(message->get().type_name()));
+                                            std::string(target.type_name()));
                 }
                 // Сначала вычисляем, потом присваиваем: бросок из checked_add
                 // оставляет счётчик прежним.
-                reaction->count = checked_add(c.room, c.index, reaction->count, c.by);
-                return Response{true, std::to_string(reaction->count)};
+                reaction->set_count(checked_add(c.room, c.index, reaction->count(), c.by));
+                return Response{true, std::to_string(reaction->count())};
             },
             [&](const TopicCommand& c) {
                 if (!c.topic) {
@@ -183,8 +184,7 @@ Response run_command(ChatStore& store, Session& session, const Command& command)
                 require_member(store, c.room, session);
                 const std::string topic(*c.topic);
                 store.set_topic(c.room, topic);
-                store.post(c.room,
-                           Message(session.nick, Body{SystemNotice{session.nick + " set topic: " + topic}}));
+                store.post(c.room, make_notice(session.nick, session.nick + " set topic: " + topic));
                 return Response{true, "OK"};
             },
             [&](const NickCommand& c) {
