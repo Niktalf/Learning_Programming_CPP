@@ -14,6 +14,7 @@ using chat::testing::Tracked;
 
 TEST(ChatStore, PostThenReadHistory) {
     ChatStore store;
+    store.create_room("#general");
     store.post("#general", Message("alice", "hello"));
     store.post("#general", Message("bob", "hi"));
 
@@ -62,6 +63,7 @@ TEST(ChatStore, JoinAndLeaveTrackMembers) {
 
 TEST(ChatStore, MessageAtGivesOptionalReferenceInsteadOfPointer) {
     ChatStore store;
+    store.create_room("#general");
     store.post("#general", Message("alice", "hello"));
 
     EXPECT_TRUE(store.message_at("#general", 0).has_value());
@@ -79,6 +81,7 @@ TEST(ChatStore, TopicBelongsToExistingRoom) {
 
 TEST(ChatStore, PostingTemporaryDoesNotCopy) {
     BasicChatStore<Tracked> store;
+    store.create_room("#general");
     Tracked::reset();
 
     store.post("#general", Tracked{std::string("payload")});
@@ -89,6 +92,7 @@ TEST(ChatStore, PostingTemporaryDoesNotCopy) {
 
 TEST(ChatStore, PostingNamedMessageCopiesExactlyOnce) {
     BasicChatStore<Tracked> store;
+    store.create_room("#general");
     Tracked named{std::string("payload")};
     Tracked::reset();
 
@@ -99,6 +103,7 @@ TEST(ChatStore, PostingNamedMessageCopiesExactlyOnce) {
 
 TEST(ChatStore, ExplicitMoveDoesNotCopy) {
     BasicChatStore<Tracked> store;
+    store.create_room("#general");
     Tracked named{std::string("payload")};
     Tracked::reset();
 
@@ -109,6 +114,9 @@ TEST(ChatStore, ExplicitMoveDoesNotCopy) {
 
 TEST(ChatStore, ForEachRoomVisitsRoomsInNameOrder) {
     ChatStore store;
+    store.create_room("#b");
+    store.create_room("#a");
+    store.create_room("#c");
     store.post("#b", Message("u", "2"));
     store.post("#a", Message("u", "1"));
     store.post("#c", Message("u", "3"));
@@ -126,6 +134,8 @@ TEST(ChatStore, ForEachRoomVisitsRoomsInNameOrder) {
 
 TEST(ChatStore, CaptureByReferenceAccumulatesButByValueDoesNot) {
     ChatStore store;
+    store.create_room("#a");
+    store.create_room("#b");
     store.post("#a", Message("u", "1"));
     store.post("#a", Message("u", "2"));
     store.post("#b", Message("u", "3"));
@@ -142,4 +152,48 @@ TEST(ChatStore, CaptureByReferenceAccumulatesButByValueDoesNot) {
 
     EXPECT_EQ(by_reference, 3);   // 2 + 1
     EXPECT_EQ(by_value, 0);       // менялась копия, наружу ничего не вышло
+}
+
+TEST(ChatStore, PostToUnknownRoomThrows) {
+    ChatStore store;
+    // Этап 3: комнаты создаёт только вход в них, отправка — нет.
+    EXPECT_THROW(store.post("#absent", Message("alice", "hello")), chat::UnknownRoomError);
+    EXPECT_EQ(store.room_count(), 0u);
+}
+
+TEST(ChatStore, NicknameRegistryRejectsDuplicates) {
+    ChatStore store;
+    store.register_nick("alice");
+    EXPECT_THROW(store.register_nick("alice"), chat::NicknameTakenError);
+    store.release_nick("alice");
+    EXPECT_NO_THROW(store.register_nick("alice"));
+}
+
+TEST(ChatStore, RenameUpdatesRegistryAndEveryRoom) {
+    ChatStore store;
+    store.register_nick("alice");
+    store.join("#a", "alice");
+    store.join("#b", "alice");
+    store.join("#c", "bob");
+
+    store.rename("alice", "alicia");
+
+    EXPECT_FALSE(store.has_nick("alice"));
+    EXPECT_TRUE(store.has_nick("alicia"));
+    EXPECT_TRUE(store.is_member("#a", "alicia"));
+    EXPECT_TRUE(store.is_member("#b", "alicia"));
+    EXPECT_FALSE(store.is_member("#a", "alice"));
+    EXPECT_FALSE(store.is_member("#c", "alicia"));   // в чужие комнаты не попадает
+}
+
+TEST(ChatStore, RenameToTakenNickChangesNothing) {
+    ChatStore store;
+    store.register_nick("alice");
+    store.register_nick("bob");
+    store.join("#a", "alice");
+
+    EXPECT_THROW(store.rename("alice", "bob"), chat::NicknameTakenError);
+    EXPECT_TRUE(store.has_nick("alice"));
+    EXPECT_TRUE(store.is_member("#a", "alice"));
+    EXPECT_FALSE(store.is_member("#a", "bob"));
 }

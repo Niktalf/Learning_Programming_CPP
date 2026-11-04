@@ -2,7 +2,9 @@
 
 #include <cstdint>
 #include <string_view>
+#include <utility>
 #include <variant>
+#include <vector>
 
 namespace kvs {
 
@@ -19,7 +21,11 @@ struct ExistsCommand { std::string_view key; };
 struct TypeCommand   { std::string_view key; };
 struct IncrCommand   { std::string_view key; std::int64_t by; };
 
+// Этап 3: установка нескольких ключей одной операцией. Требование — либо
+// записаны все пары, либо ни одной.
+struct MsetCommand   { std::vector<std::pair<std::string_view, std::string_view>> pairs; };
+
 using Command = std::variant<SetCommand, GetCommand, DelCommand,
-                             ExistsCommand, TypeCommand, IncrCommand>;
+                             ExistsCommand, TypeCommand, IncrCommand, MsetCommand>;
 
 }  // namespace kvs

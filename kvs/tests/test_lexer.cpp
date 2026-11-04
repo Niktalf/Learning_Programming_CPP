@@ -34,9 +34,10 @@ TEST(Lexer, HandlesQuotedArgument) {
     EXPECT_EQ(tokens[2], std::string_view("hello world"));
 }
 
-TEST(Lexer, UnterminatedQuoteYieldsNothing) {
+TEST(Lexer, UnterminatedQuoteIsAnError) {
+    // На этапе 2 здесь возвращался пустой вектор, неотличимый от пустой строки.
     const std::string line = R"(SET greeting "hello)";
-    EXPECT_TRUE(tokenize(line).empty());
+    EXPECT_THROW(static_cast<void>(tokenize(line)), kvs::ParseError);
 }
 
 TEST(Lexer, IgnoresExtraSpaces) {

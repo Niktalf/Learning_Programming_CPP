@@ -2,12 +2,16 @@
 
 #include <charconv>
 #include <cstdint>
+#include <exception>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 
+#include "taskq/errors.hpp"
 #include "taskq/overloaded.hpp"
 
 namespace taskq {
@@ -26,9 +30,15 @@ constexpr std::string_view binary_prefix = "bin:";
 }
 
 [[nodiscard]] int hex_digit(char c) noexcept {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
     return -1;
 }
 
@@ -51,119 +61,222 @@ constexpr std::string_view binary_prefix = "bin:";
 
 // Тело задачи по префиксу: num:42 — числовой аргумент, bin:cafe — двоичные
 // данные в шестнадцатеричной записи, всё остальное — текстовая команда.
-[[nodiscard]] std::optional<Payload> make_payload(std::string_view body) {
+// Некорректный префиксный вид — ошибка разбора тела, а не тихий текст.
+[[nodiscard]] Payload make_payload(std::string_view body) {
     if (body.substr(0, number_prefix.size()) == number_prefix) {
-        if (const auto value = to_int(body.substr(number_prefix.size())); value) {
-            return Payload{NumericPayload{*value}};
+        const auto value = to_int(body.substr(number_prefix.size()));
+        if (!value) {
+            throw ParseError("num: payload must be a 64-bit integer", std::string(body));
         }
-        return std::nullopt;
+        return NumericPayload{*value};
     }
     if (body.substr(0, binary_prefix.size()) == binary_prefix) {
-        if (auto bytes = from_hex(body.substr(binary_prefix.size())); bytes) {
-            return Payload{BinaryPayload{std::move(*bytes)}};
+        auto bytes = from_hex(body.substr(binary_prefix.size()));
+        if (!bytes) {
+            throw ParseError("bin: payload must be an even number of hex digits",
+                             std::string(body));
         }
-        return std::nullopt;
+        return BinaryPayload{std::move(*bytes)};
     }
-    return Payload{TextPayload{std::string(body)}};
+    return TextPayload{std::string(body)};
 }
 
-[[nodiscard]] Response unknown_task(TaskId id) {
-    std::ostringstream out;
-    out << "ERR no such task: " << id;
-    return Response{false, out.str()};
+// Сложение с проверкой переполнения. Необходимость нашёл фаззер из домашнего
+// задания: переполнение знакового целого — неопределённое поведение.
+[[nodiscard]] std::int64_t checked_add(TaskId id, std::int64_t current, std::int64_t by) {
+    constexpr std::int64_t max = std::numeric_limits<std::int64_t>::max();
+    constexpr std::int64_t min = std::numeric_limits<std::int64_t>::min();
+    if ((by > 0 && current > max - by) || (by < 0 && current < min - by)) {
+        throw OverflowError(id, current, by);
+    }
+    return current + by;
 }
 
-[[nodiscard]] Response not_in_flight(TaskId id) {
-    std::ostringstream out;
-    out << "ERR task " << id << " is not in progress";
-    return Response{false, out.str()};
+// Короткое описание команды для цепочки контекста: глагол и аргумент.
+[[nodiscard]] std::string describe(const Command& command) {
+    return std::visit(
+        overloaded{
+            [](const CreateCommand& c) { return "CREATE " + std::string(c.queue); },
+            [](const SubmitCommand& c) { return "SUBMIT " + std::string(c.queue); },
+            [](const BatchCommand& c) {
+                return "SUBMITBATCH of " + std::to_string(c.items.size());
+            },
+            [](const PollCommand& c) { return "POLL " + std::string(c.queue); },
+            [](const AckCommand& c) { return "ACK " + std::to_string(c.id); },
+            [](const FailCommand& c) { return "FAIL " + std::to_string(c.id); },
+            [](const ReleaseCommand& c) { return "RELEASE " + std::to_string(c.id); },
+            [](const StatusCommand& c) { return "STATUS " + std::to_string(c.id); },
+            [](const TypeCommand& c) { return "TYPE " + std::to_string(c.id); },
+            [](const BumpCommand& c) { return "BUMP " + std::to_string(c.id); },
+        },
+        command);
 }
 
 }  // namespace
 
-Response Service::execute(const Command& command) {
+State Service::state_of(TaskId id) const {
+    const auto it = states_.find(id);
+    if (it == states_.end()) {
+        throw UnknownTaskError(id);
+    }
+    return it->second;
+}
+
+void Service::require_transition(TaskId id, State to) const {
+    const State from = state_of(id);
+    if (!allowed(from, to)) {
+        throw InvalidTransitionError(id, from, to);
+    }
+}
+
+void Service::transition_to(TaskId id, State to) noexcept {
+    states_.find(id)->second = to;
+}
+
+// Постановка одной задачи и пакета — один путь: SUBMIT — пакет из одной.
+//
+// Сильная гарантия на уровне сервиса складывается из трёх шагов, и порядок
+// существен:
+//   1. всё, что может бросить, но не трогает состояние сервиса: разбор тел
+//      и подготовка записей о состоянии новых задач в отдельной таблице;
+//   2. постановка в хранилище — сильная гарантия submit_batch;
+//   3. перенос подготовленных записей в states_ через merge. merge переносит
+//      узлы, не выделяя памяти, и бросить может только сравнение ключей —
+//      а сравнение целых не бросает.
+// Номера задач занимаются последними: неудачный пакет номеров не тратит.
+Response Service::submit_all(const std::vector<SubmitCommand>& items) {
+    std::vector<std::pair<std::string_view, Task>> tasks;
+    tasks.reserve(items.size());
+    std::map<TaskId, State> added;
+    TaskId id = next_id_;
+    for (const SubmitCommand& item : items) {
+        tasks.emplace_back(item.queue, Task(id, make_payload(item.body), item.priority));
+        added.emplace(id, State::Pending);
+        ++id;
+    }
+
+    store_.submit_batch(tasks);
+    states_.merge(added);
+
+    const TaskId first = next_id_;
+    next_id_ = id;
+    if (items.size() == 1) {
+        return Response{true, "OK id=" + std::to_string(first)};
+    }
+    return Response{true, "OK ids=" + std::to_string(first) + ".." + std::to_string(id - 1)};
+}
+
+// Выдача задачи воркеру — тоже с сильной гарантией. Наивный порядок «забрать
+// из очереди, потом записать в leases_» терял бы задачу при нехватке памяти
+// на узел map: из очереди она уже ушла, в аренду не попала. Поэтому место
+// в leases_ готовится заранее, и задача переезжает в него перемещением,
+// которое не бросает.
+Response Service::poll(std::string_view queue) {
+    const auto id = store_.front_id(queue);   // нет очереди — UnknownQueueError
+    if (!id) {
+        return Response{true, "(empty)"};   // пустая очередь — не ошибка
+    }
+    require_transition(*id, State::Leased);
+
+    // Подготовка: узел map и копия имени очереди. Здесь может бросить, но
+    // очередь ещё не тронута.
+    const auto slot = leases_.try_emplace(*id, Lease{Task{}, std::string(queue)}).first;
+
+    // Фиксация: ни одна операция ниже не бросает.
+    slot->second.task = std::move(*store_.take(queue));
+    transition_to(*id, State::Leased);
+
+    std::ostringstream out;
+    out << "id=" << *id << ' ' << slot->second.task.to_string();
+    return Response{true, out.str()};
+}
+
+Response Service::run(const Command& command) {
     return std::visit(
         overloaded{
-            [&](const SubmitCommand& c) {
-                auto payload = make_payload(c.body);
-                if (!payload) {
-                    return Response{false, "ERR malformed num: or bin: payload"};
-                }
-                const TaskId id = next_id_++;
-                store_.submit(std::string(c.queue), Task(id, std::move(*payload), c.priority));
-                std::ostringstream out;
-                out << "OK id=" << id;
-                return Response{true, out.str()};
+            [&](const CreateCommand& c) {
+                const bool created = store_.create_queue(std::string(c.queue));
+                return Response{true, created ? "OK" : "OK, already exists"};
             },
-            [&](const PollCommand& c) {
-                // if с инициализацией: результат ограничен областью проверки.
-                if (auto task = store_.take(c.queue); task) {
-                    const TaskId id = task->id();
-                    std::ostringstream out;
-                    out << "id=" << id << ' ' << task->to_string();
-                    in_flight_.emplace(id, std::move(*task));
-                    return Response{true, out.str()};
-                }
-                // Здесь и виден изъян: сказать, очередь пуста или её нет
-                // вовсе, мы по-прежнему не можем. Это чинится на этапе 3.
-                return Response{true, "(nil)"};
-            },
+            [&](const SubmitCommand& c) { return submit_all({c}); },
+            [&](const BatchCommand& c) { return submit_all(c.items); },
+            [&](const PollCommand& c) { return poll(c.queue); },
             [&](const AckCommand& c) {
-                if (in_flight_.erase(c.id) == 0) {
-                    return not_in_flight(c.id);
-                }
-                finished_.insert_or_assign(c.id, true);
+                require_transition(c.id, State::Done);
+                leases_.erase(c.id);
+                transition_to(c.id, State::Done);
                 return Response{true, "OK"};
             },
             [&](const FailCommand& c) {
-                if (in_flight_.erase(c.id) == 0) {
-                    return not_in_flight(c.id);
-                }
-                finished_.insert_or_assign(c.id, false);
+                require_transition(c.id, State::Failed);
+                leases_.erase(c.id);
+                transition_to(c.id, State::Failed);
+                return Response{true, "OK"};
+            },
+            [&](const ReleaseCommand& c) {
+                // Возврат аренды: задача встаёт в конец своей очереди.
+                // Сначала копия в очередь — если она бросит, аренда цела;
+                // затем удаление аренды, которое не бросает. Копия — цена
+                // простоты; RELEASE редок по сравнению с POLL.
+                require_transition(c.id, State::Pending);
+                const auto lease = leases_.find(c.id);
+                store_.submit(lease->second.queue, lease->second.task);
+                leases_.erase(lease);
+                transition_to(c.id, State::Pending);
                 return Response{true, "OK"};
             },
             [&](const StatusCommand& c) {
-                if (const auto queue = store_.queue_of(c.id); queue) {
-                    return Response{true, "pending in " + *queue};
+                const State state = state_of(c.id);
+                if (state == State::Pending) {
+                    // Задача в состоянии Pending обязана лежать в очереди.
+                    return Response{true, "pending in " + store_.queue_of(c.id).value()};
                 }
-                if (in_flight_.count(c.id) != 0) {
-                    return Response{true, "in progress"};
-                }
-                if (const auto it = finished_.find(c.id); it != finished_.end()) {
-                    return Response{true, it->second ? "done" : "failed"};
-                }
-                return unknown_task(c.id);
+                return Response{true, std::string(name(state))};
             },
             [&](const TypeCommand& c) {
-                if (const auto task = store_.find(c.id); task) {
-                    return Response{true, std::string(task->get().type_name())};
+                const State state = state_of(c.id);
+                if (state == State::Pending) {
+                    return Response{true, std::string(store_.find(c.id)->get().type_name())};
                 }
-                if (const auto it = in_flight_.find(c.id); it != in_flight_.end()) {
-                    return Response{true, std::string(it->second.type_name())};
+                if (state == State::Leased) {
+                    return Response{true, std::string(leases_.at(c.id).task.type_name())};
                 }
-                return unknown_task(c.id);
+                // Тело завершённой задачи не хранится.
+                throw WrongStateError(c.id, state, "TYPE");
             },
             [&](const BumpCommand& c) {
-                // BUMP меняет ещё не выданную задачу: менять аргумент работы,
+                // BUMP меняет только ожидающую задачу: менять аргумент работы,
                 // которую воркер уже выполняет, бессмысленно.
-                const auto task = store_.find(c.id);
-                if (!task) {
-                    return unknown_task(c.id);
+                const State state = state_of(c.id);
+                if (state != State::Pending) {
+                    throw WrongStateError(c.id, state, "BUMP");
                 }
-                // get_if вместо std::get: неверная альтернатива здесь штатная
-                // ошибка пользователя, а не исключительная ситуация.
-                NumericPayload* const number = task->get().get_if<NumericPayload>();
+                Task& task = store_.find(c.id)->get();
+                NumericPayload* const number = task.get_if<NumericPayload>();
                 if (number == nullptr) {
-                    return Response{false, "ERR BUMP needs a number, the payload is " +
-                                               std::string(task->get().type_name())};
+                    throw TypeMismatchError(c.id, "number", std::string(task.type_name()));
                 }
-                number->value += c.by;
-                std::ostringstream out;
-                out << number->value;
-                return Response{true, out.str()};
+                // Сначала вычисляем, потом присваиваем: бросок из checked_add
+                // оставляет значение прежним.
+                number->value = checked_add(c.id, number->value, c.by);
+                return Response{true, std::to_string(number->value)};
             },
         },
         command);
+}
+
+// Звёздочка этапа 3: цепочка контекста. Ошибка из глубины — из хранилища или
+// из автомата — не знает, какая команда её вызвала. Исполнитель перехватывает
+// её только затем, чтобы приложить это знание, и тут же бросает дальше:
+// std::throw_with_nested создаёт новое исключение, внутри которого лежит
+// исходное. Ничего не решается и не проглатывается — разворачивает цепочку и
+// решает, что ответить, по-прежнему только граница handle.
+Response Service::execute(const Command& command) {
+    try {
+        return run(command);
+    } catch (...) {
+        std::throw_with_nested(TaskQError("while executing " + describe(command)));
+    }
 }
 
 }  // namespace taskq

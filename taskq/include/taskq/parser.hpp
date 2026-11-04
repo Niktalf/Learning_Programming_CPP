@@ -1,11 +1,12 @@
 #pragma once
 
-#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 
 #include "taskq/command.hpp"
+#include "taskq/errors.hpp"
+#include "taskq/result.hpp"
 
 namespace taskq {
 
@@ -35,13 +36,23 @@ private:
     std::string text_;
 };
 
-// Пустой результат означает «строка не разобрана». На этапе 3 он сменится
-// иерархией исключений, и станет видно, чего здесь не хватает: причины отказа.
-[[nodiscard]] std::optional<Command> parse(const InputLine& line);
+// Этап 3: два пути разбора.
+//
+// parse бросает ParseError с причиной отказа и исходной строкой — то, чего
+// не хватало пустому std::optional на этапе 2. Этим путём пользуется граница
+// handle.
+//
+// try_parse возвращает ту же ошибку значением. Это второй путь, ради
+// сравнения: на одних и тех же входах оба дают одну и ту же причину, а чем
+// они различаются по читаемости, стоимости и пробросу через уровни, написано
+// в docs/errors.md.
+[[nodiscard]] Command parse(const InputLine& line);
+[[nodiscard]] Result<Command, ParseError> try_parse(const InputLine& line);
 
-// Перегрузка для временного объекта удалена: результат разбора пережил бы
+// Перегрузки для временного объекта удалены: результат разбора пережил бы
 // аргумент. Тот же приём, что и с tokenize, — ошибка закрывается интерфейсом,
 // а не дисциплиной вызывающего.
-std::optional<Command> parse(InputLine&&) = delete;
+Command parse(InputLine&&) = delete;
+Result<Command, ParseError> try_parse(InputLine&&) = delete;
 
 }  // namespace taskq

@@ -4,19 +4,24 @@
 #include <utility>
 
 #include "taskq/executor.hpp"
-#include "taskq/parser.hpp"
+#include "taskq/handler.hpp"
 
 namespace {
 
 void print_help() {
     std::cout << "Commands:\n"
+              << "  CREATE <queue>                   create a queue\n"
               << "  SUBMIT <queue> [prio=N] <body>   enqueue a task, priority 0..9;\n"
               << "                                   quote queue names with spaces;\n"
               << "                                   body num:42 is a number, bin:cafe bytes\n"
-              << "  POLL <queue>                     take the next task\n"
-              << "  ACK <id>                         mark a taken task done\n"
-              << "  FAIL <id>                        mark a taken task failed\n"
-              << "  STATUS <id>                      where the task is\n"
+              << "  SUBMITBATCH <queue> [prio=N] <body> ...\n"
+              << "                                   enqueue several, all or nothing;\n"
+              << "                                   quote bodies with spaces\n"
+              << "  POLL <queue>                     lease the next task\n"
+              << "  ACK <id>                         mark a leased task done\n"
+              << "  FAIL <id>                        mark a leased task failed\n"
+              << "  RELEASE <id>                     return a leased task to its queue\n"
+              << "  STATUS <id>                      state of the task\n"
               << "  TYPE <id>                        kind of the payload\n"
               << "  BUMP <id> [n]                    add to a numeric payload\n"
               << "  DEMO                             capture by reference vs by value\n"
@@ -43,17 +48,13 @@ void run_capture_demo(const taskq::TaskStore& store) {
 }  // namespace
 
 int main() {
-    std::cout << "TASKQ, stage 2\n";
+    std::cout << "TASKQ, stage 3\n";
     print_help();
 
     taskq::Service service;
     std::string raw;   // объявлена до цикла: в неё читает std::getline
     while (std::getline(std::cin, raw)) {
-        // Владелец строки живёт дольше результата разбора — в этом вся суть
-        // архитектурного исправления этапа.
-        const taskq::InputLine line{std::move(raw)};
-
-        const std::string_view view = line.view();
+        const std::string_view view = raw;
         if (view.find_first_not_of(' ') == std::string_view::npos) {
             continue;
         }
@@ -68,12 +69,9 @@ int main() {
             run_capture_demo(service.store());
             continue;
         }
-
-        if (const auto command = taskq::parse(line); command) {
-            std::cout << service.execute(*command).text << '\n';
-        } else {
-            std::cout << "ERR unknown command or wrong arguments; HELP lists commands\n";
-        }
+        // Вся обработка ошибок — внутри handle. Здесь нет ни одного try:
+        // консольный клиент просто печатает ответ, каким бы он ни был.
+        std::cout << taskq::handle(service, std::move(raw)).text << '\n';
     }
     return 0;
 }

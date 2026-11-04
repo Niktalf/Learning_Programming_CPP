@@ -40,9 +40,9 @@ public:
         return std::holds_alternative<T>(data_);
     }
 
-    // Возвращает указатель, а не бросает: на этом этапе исключений в проекте
-    // ещё нет, они появятся на этапе 3. std::get здесь применять нельзя —
-    // bad_variant_access улетел бы наружу и уронил обработку команды.
+    // Возвращает указатель, а не бросает: неверный тип здесь штатная
+    // ситуация, и исполнитель сам превращает её в TypeMismatchError с
+    // контекстом. std::get дал бы bad_variant_access без ключа и типов.
     template <class T>
     [[nodiscard]] const T* get_if() const noexcept {
         return std::get_if<T>(&data_);

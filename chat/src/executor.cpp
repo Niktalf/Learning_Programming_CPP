@@ -1,11 +1,15 @@
 #include "chat/executor.hpp"
 
 #include <cstdint>
+#include <exception>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 
+#include "chat/errors.hpp"
 #include "chat/overloaded.hpp"
 
 namespace chat {
@@ -34,116 +38,181 @@ namespace {
     return TextBody{std::string(text)};
 }
 
-[[nodiscard]] Response not_a_member(std::string_view room) {
-    return Response{false, "ERR you are not in " + std::string(room) + " (use /join)"};
+// Комната существует, и сессия в ней состоит. Одна точка, где отказ
+// превращается в исключение, — чтобы не повторять проверку в каждой команде.
+void require_member(const ChatStore& store, std::string_view room, const Session& session) {
+    if (!store.contains(room)) {
+        throw UnknownRoomError(std::string(room));
+    }
+    if (!store.is_member(room, session.nick)) {
+        throw NotMemberError(std::string(room), session.nick);
+    }
 }
 
-[[nodiscard]] Response no_room(std::string_view room) {
-    return Response{false, "ERR no such room: " + std::string(room)};
+// Сложение с проверкой переполнения. Необходимость нашёл фаззер из домашнего
+// задания: переполнение знакового целого — неопределённое поведение.
+[[nodiscard]] std::int64_t checked_add(std::string_view room, std::size_t index,
+                                       std::int64_t current, std::int64_t by) {
+    constexpr std::int64_t max = std::numeric_limits<std::int64_t>::max();
+    constexpr std::int64_t min = std::numeric_limits<std::int64_t>::min();
+    if ((by > 0 && current > max - by) || (by < 0 && current < min - by)) {
+        throw CounterOverflowError(std::string(room), index, current, by);
+    }
+    return current + by;
 }
 
-[[nodiscard]] Response no_message(std::string_view room, std::size_t index) {
-    std::ostringstream out;
-    out << "ERR no message " << index << " in " << room;
-    return Response{false, out.str()};
+[[nodiscard]] std::string without_last_newline(const std::string& text, const char* empty) {
+    return text.empty() ? std::string(empty) : text.substr(0, text.size() - 1);
 }
 
-}  // namespace
+// Короткое описание команды для цепочки контекста: глагол и комнаты.
+[[nodiscard]] std::string describe(const Command& command) {
+    return std::visit(
+        overloaded{
+            [](const JoinCommand& c) { return "/join " + std::string(c.room); },
+            [](const LeaveCommand& c) { return "/leave " + std::string(c.room); },
+            [](const MsgCommand& c) {
+                std::string text = "/msg";
+                char separator = ' ';
+                for (const std::string_view room : c.rooms) {
+                    text += separator;
+                    text += room;
+                    separator = ',';
+                }
+                return text;
+            },
+            [](const WhoCommand& c) { return "/who " + std::string(c.room); },
+            [](const HistoryCommand& c) { return "/history " + std::string(c.room); },
+            [](const TypeCommand& c) { return "/type " + std::string(c.room); },
+            [](const ReactCommand& c) { return "/react " + std::string(c.room); },
+            [](const TopicCommand& c) { return "/topic " + std::string(c.room); },
+            [](const NickCommand& c) { return "/nick " + std::string(c.nick); },
+        },
+        command);
+}
 
-Response execute(ChatStore& store, const Session& session, const Command& command) {
+Response run_command(ChatStore& store, Session& session, const Command& command) {
     return std::visit(
         overloaded{
             [&](const JoinCommand& c) {
                 if (store.join(c.room, session.nick)) {
-                    store.post(std::string(c.room),
+                    store.post(c.room,
                                Message(session.nick, Body{SystemNotice{session.nick + " joined"}}));
                 }
                 return Response{true, "OK"};
             },
             [&](const LeaveCommand& c) {
-                if (!store.leave(c.room, session.nick)) {
-                    return not_a_member(c.room);
-                }
-                store.post(std::string(c.room),
-                           Message(session.nick, Body{SystemNotice{session.nick + " left"}}));
+                require_member(store, c.room, session);
+                store.leave(c.room, session.nick);
+                store.post(c.room, Message(session.nick, Body{SystemNotice{session.nick + " left"}}));
                 return Response{true, "OK"};
             },
             [&](const MsgCommand& c) {
-                if (!store.is_member(c.room, session.nick)) {
-                    return not_a_member(c.room);
+                // Все проверки — до рассылки: отказ в третьей комнате не должен
+                // оставить сообщение в первых двух. Сама рассылка атомарна.
+                for (const std::string_view room : c.rooms) {
+                    require_member(store, room, session);
                 }
-                store.post(std::string(c.room), Message(session.nick, make_body(c.text)));
+                store.post_many(c.rooms, Message(session.nick, make_body(c.text)));
                 return Response{true, "OK"};
             },
             [&](const WhoCommand& c) {
-                // if с инициализацией: результат ограничен областью проверки.
-                if (const auto members = store.members(c.room); members) {
-                    std::ostringstream out;
-                    for (const std::string& nick : members->get()) {
-                        out << nick << '\n';
-                    }
-                    const std::string text = out.str();
-                    return Response{true, text.empty() ? "(empty)" : text.substr(0, text.size() - 1)};
+                const auto members = store.members(c.room);
+                if (!members) {
+                    throw UnknownRoomError(std::string(c.room));
                 }
-                return no_room(c.room);
+                std::ostringstream out;
+                for (const std::string& nick : members->get()) {
+                    out << nick << '\n';
+                }
+                return Response{true, without_last_newline(out.str(), "(empty)")};
             },
             [&](const HistoryCommand& c) {
-                if (const auto history = store.history(c.room); history) {
-                    const History& messages = history->get();
-                    const std::size_t from =
-                        messages.size() > c.limit ? messages.size() - c.limit : 0;
-                    std::ostringstream out;
-                    for (std::size_t i = from; i < messages.size(); ++i) {
-                        out << i << ": <" << messages[i].author() << "> "
-                            << messages[i].to_string() << '\n';
-                    }
-                    const std::string text = out.str();
-                    return Response{true, text.empty() ? "(empty)" : text.substr(0, text.size() - 1)};
+                const auto history = store.history(c.room);
+                if (!history) {
+                    throw UnknownRoomError(std::string(c.room));
                 }
-                return no_room(c.room);
+                const History& messages = history->get();
+                const std::size_t from = messages.size() > c.limit ? messages.size() - c.limit : 0;
+                std::ostringstream out;
+                for (std::size_t i = from; i < messages.size(); ++i) {
+                    out << i << ": <" << messages[i].author() << "> " << messages[i].to_string()
+                        << '\n';
+                }
+                return Response{true, without_last_newline(out.str(), "(empty)")};
             },
             [&](const TypeCommand& c) {
-                if (const auto message = store.message_at(c.room, c.index); message) {
-                    return Response{true, std::string(message->get().type_name())};
+                if (!store.contains(c.room)) {
+                    throw UnknownRoomError(std::string(c.room));
                 }
-                return no_message(c.room, c.index);
+                const auto message = std::as_const(store).message_at(c.room, c.index);
+                if (!message) {
+                    throw MessageNotFoundError(std::string(c.room), c.index);
+                }
+                return Response{true, std::string(message->get().type_name())};
             },
             [&](const ReactCommand& c) {
+                if (!store.contains(c.room)) {
+                    throw UnknownRoomError(std::string(c.room));
+                }
                 const auto message = store.message_at(c.room, c.index);
                 if (!message) {
-                    return no_message(c.room, c.index);
+                    throw MessageNotFoundError(std::string(c.room), c.index);
                 }
-                // get_if вместо std::get: реакция на текстовое сообщение —
-                // штатная ошибка пользователя, а не исключительная ситуация.
-                // Исключения появятся на этапе 3.
+                // Этап 2 проверял вид через get_if и возвращал отказ. Теперь
+                // неверный вид — ошибка с контекстом в полях: на этапе 16 по
+                // ней выберется код ответа.
                 Reaction* const reaction = message->get().get_if<Reaction>();
                 if (reaction == nullptr) {
-                    return Response{false, "ERR REACT needs a reaction, the message is " +
-                                               std::string(message->get().type_name())};
+                    throw TypeMismatchError(std::string(c.room), c.index, "reaction",
+                                            std::string(message->get().type_name()));
                 }
-                reaction->count += c.by;
-                std::ostringstream out;
-                out << reaction->count;
-                return Response{true, out.str()};
+                // Сначала вычисляем, потом присваиваем: бросок из checked_add
+                // оставляет счётчик прежним.
+                reaction->count = checked_add(c.room, c.index, reaction->count, c.by);
+                return Response{true, std::to_string(reaction->count)};
             },
             [&](const TopicCommand& c) {
                 if (!c.topic) {
-                    if (const auto topic = store.topic(c.room); topic) {
-                        return Response{true, topic->empty() ? "(no topic)" : *topic};
+                    const auto topic = store.topic(c.room);
+                    if (!topic) {
+                        throw UnknownRoomError(std::string(c.room));
                     }
-                    return no_room(c.room);
+                    return Response{true, topic->empty() ? "(no topic)" : *topic};
                 }
-                if (!store.is_member(c.room, session.nick)) {
-                    return not_a_member(c.room);
-                }
-                store.set_topic(c.room, std::string(*c.topic));
-                store.post(std::string(c.room),
-                           Message(session.nick, Body{SystemNotice{session.nick + " set topic: " +
-                                                                   std::string(*c.topic)}}));
+                require_member(store, c.room, session);
+                const std::string topic(*c.topic);
+                store.set_topic(c.room, topic);
+                store.post(c.room,
+                           Message(session.nick, Body{SystemNotice{session.nick + " set topic: " + topic}}));
                 return Response{true, "OK"};
+            },
+            [&](const NickCommand& c) {
+                std::string next(c.nick);
+                store.rename(session.nick, next);
+                // Сессия меняется последней: если rename бросил, ник прежний и
+                // в реестре, и в сессии.
+                session.nick = std::move(next);
+                return Response{true, "OK, you are " + session.nick};
             },
         },
         command);
+}
+
+}  // namespace
+
+// Звёздочка этапа 3: цепочка контекста. Ошибка из глубины — из хранилища или
+// из проверки вида сообщения — не знает, какая команда её вызвала. Исполнитель
+// перехватывает её только затем, чтобы приложить это знание, и тут же бросает
+// дальше: std::throw_with_nested создаёт новое исключение, внутри которого
+// лежит исходное. Ничего не решается и не проглатывается — разворачивает
+// цепочку и решает, что ответить, по-прежнему только граница handle.
+Response execute(ChatStore& store, Session& session, const Command& command) {
+    try {
+        return run_command(store, session, command);
+    } catch (...) {
+        std::throw_with_nested(ChatError("while executing " + describe(command)));
+    }
 }
 
 }  // namespace chat

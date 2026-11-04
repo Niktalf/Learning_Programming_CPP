@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.28)
 project(chat LANGUAGES CXX)
 
-# Этап 2 идёт под C++17: на лекции 2 разбирались string_view, optional,
-# variant, structured bindings и if с инициализацией. Ровно это здесь и
-# применяется, ни строчкой новее.
+# Этап 3 идёт под C++17: исключения, гарантии безопасности и noexcept
+# укладываются в семнадцатый стандарт. std::expected появился только в C++23,
+# поэтому второй путь обработки ошибок построен на собственном Result.
 #
 # Стандарт поднимается вместе с курсом: этап 1 был под 14, этапы 3–4 остаются
 # на 17, с этапа 5 — C++23. Так компилятор сам не даёт применить то, чего ещё
@@ -30,6 +30,9 @@ add_library(chat_core
         src/lexer.cpp
         src/parser.cpp
         src/executor.cpp
+        src/errors.cpp
+        src/handler.cpp
+        src/validate.cpp
         src/owning_buffer.cpp)
 target_include_directories(chat_core PUBLIC include)
 target_link_libraries(chat_core PRIVATE chat_warnings)
@@ -46,7 +49,13 @@ add_executable(chat_tests
         tests/test_parser.cpp
         tests/test_executor.cpp
         tests/test_lifetime.cpp
-        tests/test_push_order.cpp)
+        tests/test_push_order.cpp
+        tests/test_errors.cpp
+        tests/test_validate.cpp
+        tests/test_guarantee.cpp
+        tests/test_handler.cpp
+        tests/test_result.cpp
+        tests/test_fuzz.cpp)
 target_include_directories(chat_tests PRIVATE tests)
 target_link_libraries(chat_tests PRIVATE chat_core chat_warnings GTest::gtest_main)
 
@@ -68,6 +77,11 @@ target_link_libraries(chat_alloc_tests PRIVATE chat_core chat_warnings GTest::gt
 include(GoogleTest)
 gtest_discover_tests(chat_tests)
 gtest_discover_tests(chat_alloc_tests)
+
+# Этап 3, второй путь: цена исключений и Result без ошибок и с ошибками.
+add_executable(chat_error_cost tools/error_cost.cpp)
+target_include_directories(chat_error_cost PRIVATE tools)
+target_link_libraries(chat_error_cost PRIVATE chat_core chat_warnings)
 
 # Учебная демонстрация висячего представления. В обычную сборку не входит.
 add_executable(chat_dangling_demo EXCLUDE_FROM_ALL tests/dangling_demo.cpp)

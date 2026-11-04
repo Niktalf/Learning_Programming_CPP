@@ -41,9 +41,14 @@ TEST(Lexer, HandlesQuotedArgument) {
     EXPECT_EQ(tokens[2], std::string_view("курс по C++"));
 }
 
-TEST(Lexer, UnterminatedQuoteYieldsNothing) {
+TEST(Lexer, UnterminatedQuoteIsParseError) {
     const std::string line = R"(/topic #general "курс)";
-    EXPECT_TRUE(tokenize(line).empty());
+    // Этап 2 возвращал пустой список — и было не отличить «пусто» от «ошибка».
+    EXPECT_THROW(static_cast<void>(tokenize(line)), chat::ParseError);
+
+    const auto result = chat::try_tokenize(line);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().reason(), std::string("unterminated quote"));
 }
 
 TEST(Lexer, IgnoresExtraSpaces) {

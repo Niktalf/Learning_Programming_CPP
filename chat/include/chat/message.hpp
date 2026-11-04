@@ -47,7 +47,8 @@ public:
     [[nodiscard]] std::size_t size() const noexcept;
 
     // get_if, а не std::get: неверная альтернатива здесь штатная ситуация,
-    // а не исключительная. Исключения появятся на этапе 3.
+    // а не исключительная. Исполнитель сам решает, превратить ли её
+    // в TypeMismatchError.
     template <class T> [[nodiscard]] const T* get_if() const noexcept { return std::get_if<T>(&body_); }
     template <class T> [[nodiscard]] T* get_if() noexcept { return std::get_if<T>(&body_); }
     template <class T> [[nodiscard]] bool holds() const noexcept { return std::holds_alternative<T>(body_); }

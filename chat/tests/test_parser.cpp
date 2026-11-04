@@ -17,17 +17,28 @@ namespace {
 // Разобранная команда смотрит внутрь строки, поэтому InputLine заводится в
 // тесте как переменная и живёт до конца проверки.
 //
-// Альтернатива возвращается по значению, а не по ссылке: аргумент — временный
-// optional, и ссылка в него повисла бы в конце полного выражения. Компилятор
+// Альтернатива возвращается по значению, а не по ссылке: аргумент — временная
+// команда, и ссылка в неё повисла бы в конце полного выражения. Компилятор
 // с -Wdangling-reference ловит именно эту ошибку — ту самую, которой посвящён
-// этап. Сами команды — пары string_view, копировать их дёшево.
+// этап 2. Сами команды — string_view и числа, копировать их дёшево.
 template <class T>
-T as(const std::optional<Command>& command) {
-    if (!command || !std::holds_alternative<T>(*command)) {
+T as(const Command& command) {
+    if (!std::holds_alternative<T>(command)) {
         ADD_FAILURE() << "unexpected command alternative";
         return T{};
     }
-    return std::get<T>(*command);
+    return std::get<T>(command);
+}
+
+// Причина отказа разбора или пустая строка, если разбор прошёл.
+std::string reason_for(const char* text) {
+    const InputLine line{text};
+    try {
+        static_cast<void>(parse(line));
+    } catch (const chat::ParseError& e) {
+        return e.reason();
+    }
+    return {};
 }
 
 }  // namespace
@@ -43,7 +54,8 @@ TEST(Parser, ParsesJoinAndLeave) {
 TEST(Parser, MsgTakesRestOfLineAsText) {
     const InputLine line{"/msg #general  всем привет,   как дела"};
     const auto msg = as<chat::MsgCommand>(parse(line));
-    EXPECT_EQ(msg.room, std::string_view("#general"));
+    ASSERT_EQ(msg.rooms.size(), 1u);
+    EXPECT_EQ(msg.rooms.front(), std::string_view("#general"));
     EXPECT_EQ(msg.text, std::string_view("всем привет,   как дела"));
 }
 
@@ -66,8 +78,8 @@ TEST(Parser, TopicWithoutTextMeansShow) {
 }
 
 TEST(Parser, UnquotedMultiWordTopicIsRejected) {
-    const InputLine line{"/topic #general обсуждаем курс"};
-    EXPECT_FALSE(parse(line).has_value());
+    EXPECT_EQ(reason_for("/topic #general обсуждаем курс"),
+              std::string("/topic expects a room and an optional quoted topic"));
 }
 
 TEST(Parser, HistoryHasDefaultLimit) {
@@ -87,7 +99,7 @@ TEST(Parser, ReactDefaultsToOne) {
 
 TEST(Parser, ParsesWhoAndType) {
     const InputLine who{"/who #general"};
-    EXPECT_TRUE(std::holds_alternative<chat::WhoCommand>(*parse(who)));
+    EXPECT_TRUE(std::holds_alternative<chat::WhoCommand>(parse(who)));
 
     const InputLine type{"/type #general 0"};
     EXPECT_EQ(as<chat::TypeCommand>(parse(type)).index, 0u);
@@ -99,8 +111,47 @@ TEST(Parser, RejectsMalformedInput) {
           "/history #general 3x", "/react #general", "/type #general -1", "/unknown #general",
           R"(/topic #general "незакрыто)", "hello"}) {
         const InputLine line{text};
-        EXPECT_FALSE(parse(line).has_value()) << text;
+        EXPECT_THROW(static_cast<void>(parse(line)), chat::ParseError) << text;
     }
+}
+
+TEST(Parser, ErrorCarriesReasonAndInput) {
+    // Ради этого этап 3 и затевался: пустой optional говорил «не разобрано»,
+    // но не говорил почему.
+    EXPECT_EQ(reason_for("/msg #general"), std::string("message text is empty"));
+    EXPECT_EQ(reason_for("/join general"), std::string("room name must start with #: general"));
+    EXPECT_EQ(reason_for("/frob #general"), std::string("unknown command: /frob"));
+    EXPECT_EQ(reason_for("/history #general x"),
+              std::string("limit must be a non-negative number: x"));
+    EXPECT_EQ(reason_for("/join #a #b"), std::string("/join expects 1 argument"));
+
+    const InputLine line{"/join general"};
+    try {
+        static_cast<void>(parse(line));
+        ADD_FAILURE() << "parse must throw";
+    } catch (const chat::ParseError& e) {
+        EXPECT_EQ(e.input(), std::string("/join general"));
+    }
+}
+
+TEST(Parser, MsgToSeveralRooms) {
+    const InputLine line{"/msg #a,#b,#c всем сразу"};
+    const auto msg = as<chat::MsgCommand>(parse(line));
+    ASSERT_EQ(msg.rooms.size(), 3u);
+    EXPECT_EQ(msg.rooms[1], std::string_view("#b"));
+    EXPECT_EQ(msg.text, std::string_view("всем сразу"));
+
+    EXPECT_EQ(reason_for("/msg #a,#a hi"), std::string("room listed twice: #a"));
+    EXPECT_EQ(reason_for("/msg #a,,#b hi"), std::string("room name must start with #: "));
+    EXPECT_EQ(reason_for("/msg #a,b hi"), std::string("room name must start with #: b"));
+}
+
+TEST(Parser, ParsesNick) {
+    const InputLine line{"/nick alicia"};
+    EXPECT_EQ(as<chat::NickCommand>(parse(line)).nick, std::string_view("alicia"));
+    EXPECT_EQ(reason_for(R"(/nick "   ")"),
+              std::string("nickname may contain only letters, digits, _ and -"));
+    EXPECT_EQ(reason_for("/nick a b"), std::string("/nick expects 1 argument"));
 }
 
 TEST(Parser, ResultBorrowsFromInputLine) {

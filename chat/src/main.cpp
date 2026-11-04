@@ -5,7 +5,8 @@
 
 #include "chat/chat_store.hpp"
 #include "chat/executor.hpp"
-#include "chat/parser.hpp"
+#include "chat/handler.hpp"
+#include "chat/validate.hpp"
 
 namespace {
 
@@ -13,12 +14,14 @@ void print_help() {
     std::cout << "Commands:\n"
               << "  /join <#room>                 join a room (creates it if needed)\n"
               << "  /leave <#room>                leave a room\n"
-              << "  /msg <#room> <text>           post a message; :name: posts a reaction\n"
+              << "  /msg <#room>[,#room...] <text>  post to one or several rooms, all or none;\n"
+              << "                                :name: posts a reaction\n"
               << "  /who <#room>                  list room members\n"
               << "  /history <#room> [limit]      show the last messages\n"
               << "  /type <#room> <index>         kind of a message\n"
               << "  /react <#room> <index> [n]    add to a reaction counter\n"
               << "  /topic <#room> [\"topic\"]      show or set the topic\n"
+              << "  /nick <nickname>              change your nickname\n"
               << "  DEMO                          capture by reference vs by value\n"
               << "  HELP / QUIT\n";
 }
@@ -42,21 +45,29 @@ void run_capture_demo(const chat::ChatStore& store) {
 
 }  // namespace
 
-// Ник задаётся первым аргументом: chat_cli alice. Сменить его изнутри можно
-// будет с этапа 6, когда появится команда /nick.
+// Ник задаётся первым аргументом: chat_cli alice. Сменить его можно командой
+// /nick.
 int main(int argc, char* argv[]) {
-    const chat::Session session{argc > 1 ? std::string(argv[1]) : std::string("guest")};
-    std::cout << "CHAT, stage 2, you are " << session.nick << '\n';
-    print_help();
+    if (argc > 2) {
+        std::cerr << "usage: chat_cli [nickname]\n";
+        return 2;
+    }
+    chat::Session session{argc == 2 ? std::string(argv[1]) : std::string("guest")};
+    // Ник из командной строки проверяется теми же правилами, что и /nick:
+    // иначе ник из одних пробелов попал бы в реестр в обход разбора.
+    if (const auto problem = chat::nick_problem(session.nick); problem) {
+        std::cerr << "bad nickname: " << *problem << '\n';
+        return 2;
+    }
 
     chat::ChatStore store;
+    store.register_nick(session.nick);   // хранилище пустое, занят ник быть не может
+    std::cout << "CHAT, stage 3, you are " << session.nick << '\n';
+    print_help();
+
     std::string raw;   // объявлена до цикла: в неё читает std::getline
     while (std::getline(std::cin, raw)) {
-        // Владелец строки живёт дольше результата разбора — в этом вся суть
-        // архитектурного исправления этапа.
-        const chat::InputLine line{std::move(raw)};
-
-        const std::string_view view = line.view();
+        const std::string_view view = raw;
         if (view.find_first_not_of(' ') == std::string_view::npos) {
             continue;
         }
@@ -71,12 +82,9 @@ int main(int argc, char* argv[]) {
             run_capture_demo(store);
             continue;
         }
-
-        if (const auto command = chat::parse(line); command) {
-            std::cout << chat::execute(store, session, *command).text << '\n';
-        } else {
-            std::cout << "ERR unknown command or wrong arguments; HELP lists commands\n";
-        }
+        // Вся обработка ошибок — внутри handle. Здесь нет ни одного try:
+        // консольный клиент просто печатает ответ, каким бы он ни был.
+        std::cout << chat::handle(store, session, std::move(raw)).text << '\n';
     }
     return 0;
 }

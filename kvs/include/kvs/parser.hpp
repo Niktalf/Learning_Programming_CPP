@@ -1,22 +1,19 @@
 #pragma once
 
-#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 
 #include "kvs/command.hpp"
+#include "kvs/errors.hpp"
+#include "kvs/result.hpp"
 
 namespace kvs {
 
 // Владелец входной строки. Результат разбора смотрит внутрь неё, поэтому
-// строка обязана пережить команду.
-//
-// Перемещение запрещено намеренно. Причина тоньше, чем кажется: короткая
-// строка живёт внутри самого объекта std::string (оптимизация коротких строк),
-// и её перемещение переносит символы в новый адрес. Все ранее полученные
-// представления после этого указывают в никуда — причём только для коротких
-// строк, то есть ошибка проявляется выборочно и выглядит мистикой.
+// строка обязана пережить команду. Перемещение запрещено: короткая строка
+// живёт внутри самого std::string, и перемещение переносит символы в новый
+// адрес, оставляя представления висячими.
 class InputLine {
 public:
     explicit InputLine(std::string text) noexcept : text_(std::move(text)) {}
@@ -32,13 +29,16 @@ private:
     std::string text_;
 };
 
-// Пустой результат означает «строка не разобрана». На этапе 3 он сменится
-// иерархией исключений, и станет видно, чего здесь не хватает: причины отказа.
-[[nodiscard]] std::optional<Command> parse(const InputLine& line);
+// Этап 3: пустой optional этапа 2 заменён на исключение ParseError с
+// причиной отказа — тем, чего не хватало пустому optional.
+[[nodiscard]] Command parse(const InputLine& line);
 
-// Перегрузка для временного объекта удалена: результат разбора пережил бы
-// аргумент. Тот же приём, что и с tokenize, — ошибка закрывается интерфейсом,
-// а не дисциплиной вызывающего.
-std::optional<Command> parse(InputLine&&) = delete;
+// Второй путь: та же причина отказа, но возвращённая значением. Обе версии
+// оставлены в коде; сравнение — в docs/errors.md.
+[[nodiscard]] Result<Command, ParseError> try_parse(const InputLine& line);
+
+// Перегрузки для временного объекта удалены: результат пережил бы аргумент.
+Command parse(InputLine&&) = delete;
+Result<Command, ParseError> try_parse(InputLine&&) = delete;
 
 }  // namespace kvs

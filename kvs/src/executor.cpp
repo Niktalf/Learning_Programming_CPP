@@ -1,25 +1,71 @@
 #include "kvs/executor.hpp"
 
 #include <cstdint>
+#include <exception>
+#include <limits>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <variant>
+#include <vector>
 
+#include "kvs/errors.hpp"
 #include "kvs/overloaded.hpp"
 
 namespace kvs {
 namespace {
 
-// std::format появится в C++20, пока форматируем потоком.
 std::string to_text(std::int64_t value) {
     std::ostringstream out;
     out << value;
     return out.str();
 }
 
-}  // namespace
+// Сложение с проверкой переполнения. Нашёл необходимость фаззер из домашнего
+// задания: переполнение знакового целого — неопределённое поведение, и без
+// проверки INCR с шагом около INT64_MAX давал мусор или ловушку санитайзера.
+std::int64_t checked_add(std::string_view key, std::int64_t current, std::int64_t by) {
+    constexpr std::int64_t max = std::numeric_limits<std::int64_t>::max();
+    constexpr std::int64_t min = std::numeric_limits<std::int64_t>::min();
+    if ((by > 0 && current > max - by) || (by < 0 && current < min - by)) {
+        throw OverflowError(std::string(key), current, by);
+    }
+    return current + by;
+}
 
-Response execute(Store& store, const Command& command) {
+// Короткое описание команды для цепочки контекста: глагол и ключи.
+std::string describe(const Command& command) {
+    return std::visit(
+        overloaded{
+            [](const SetCommand& c) { return "SET " + std::string(c.key); },
+            [](const GetCommand& c) { return "GET " + std::string(c.key); },
+            [](const DelCommand& c) { return "DEL " + std::string(c.key); },
+            [](const ExistsCommand& c) { return "EXISTS " + std::string(c.key); },
+            [](const TypeCommand& c) { return "TYPE " + std::string(c.key); },
+            [](const IncrCommand& c) { return "INCR " + std::string(c.key); },
+            [](const MsetCommand& c) {
+                std::string text = "MSET";
+                for (const auto& [key, value] : c.pairs) {
+                    text += ' ';
+                    text += key;
+                }
+                return text;
+            },
+        },
+        command);
+}
+
+// Значение ключа или исключение. Одна точка, где отсутствие ключа
+// превращается в ошибку, — чтобы не повторять проверку в каждой команде.
+Value require(const Store& store, std::string_view key) {
+    auto value = store.get(key);
+    if (!value) {
+        throw KeyNotFoundError(std::string(key));
+    }
+    return std::move(*value);
+}
+
+Response run_command(Store& store, const Command& command) {
     return std::visit(
         overloaded{
             [&](const SetCommand& c) {
@@ -27,44 +73,69 @@ Response execute(Store& store, const Command& command) {
                 return Response{true, "OK"};
             },
             [&](const GetCommand& c) {
-                // if с инициализацией: результат живёт ровно столько, сколько
-                // нужен, и не мешается в остальной части функции.
-                if (const auto value = store.get(c.key); value) {
-                    return Response{true, value->to_string()};
-                }
-                return Response{false, "(nil)"};
+                return Response{true, require(store, c.key).to_string()};
             },
             [&](const DelCommand& c) {
-                return store.del(c.key) ? Response{true, "OK"} : Response{false, "(nil)"};
+                if (!store.del(c.key)) {
+                    throw KeyNotFoundError(std::string(c.key));
+                }
+                return Response{true, "OK"};
             },
             [&](const ExistsCommand& c) {
                 return Response{true, store.contains(c.key) ? "1" : "0"};
             },
             [&](const TypeCommand& c) {
-                if (const auto value = store.get(c.key); value) {
-                    return Response{true, std::string(value->type_name())};
-                }
-                return Response{false, "(nil)"};
+                return Response{true, std::string(require(store, c.key).type_name())};
             },
-            [&](const IncrCommand& c) -> Response {
-                const auto value = store.get(c.key);
-                if (!value) {
+            [&](const IncrCommand& c) {
+                const auto current = store.get(c.key);
+                if (!current) {
                     store.set(std::string(c.key), Value(c.by));
                     return Response{true, to_text(c.by)};
                 }
-                // get_if вместо std::get: неверная альтернатива здесь штатная
-                // ситуация, а не исключительная. Исключения появятся на этапе 3.
-                const std::int64_t* const current = value->get_if<std::int64_t>();
-                if (current == nullptr) {
-                    return Response{false, "ERR INCR needs an integer, the value is " +
-                                               std::string(value->type_name())};
+                // Этап 2 проверял альтернативу через get_if и возвращал флаг.
+                // Теперь неверный тип — ошибка с контекстом в полях: на этапе 16
+                // по ней выберется код ответа.
+                const std::int64_t* const number = current->get_if<std::int64_t>();
+                if (number == nullptr) {
+                    throw TypeMismatchError(std::string(c.key), "int",
+                                            std::string(current->type_name()));
                 }
-                const std::int64_t next = *current + c.by;
+                const std::int64_t next = checked_add(c.key, *number, c.by);
                 store.set(std::string(c.key), Value(next));
                 return Response{true, to_text(next)};
             },
+            [&](const MsetCommand& c) {
+                std::vector<std::pair<std::string, Value>> pairs;
+                pairs.reserve(c.pairs.size());
+                for (const auto& [key, value] : c.pairs) {
+                    pairs.emplace_back(std::string(key), Value(value));
+                }
+                store.mset(pairs);
+                return Response{true, "OK"};
+            },
         },
         command);
+}
+
+}  // namespace
+
+// Звёздочка этапа 3: цепочка контекста. Ошибка из глубины — из хранилища или
+// из проверки типа — не знает, какая команда её вызвала. Исполнитель
+// перехватывает её только затем, чтобы приложить это знание, и тут же бросает
+// дальше: std::throw_with_nested создаёт новое исключение, внутри которого
+// лежит исходное. Ничего не решается и не проглатывается — разворачивает
+// цепочку и решает, что ответить, по-прежнему только граница handle.
+//
+// Это единственный catch внутри ядра, и он не нарушает правило из
+// docs/errors.md: постановка запрещает catch (...) без повторного броска,
+// а здесь бросок есть всегда.
+Response execute(Store& store, const Command& command) {
+    try {
+        return run_command(store, command);
+    } catch (...) {
+        std::throw_with_nested(KvError("while executing " + describe(command)));
+    }
 }
 
 }  // namespace kvs

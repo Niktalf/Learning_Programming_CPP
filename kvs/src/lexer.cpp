@@ -1,8 +1,11 @@
 #include "kvs/lexer.hpp"
 
+#include <string>
+#include <utility>
+
 namespace kvs {
 
-Tokens tokenize(std::string_view line) {
+Result<Tokens, ParseError> try_tokenize(std::string_view line) {
     Tokens tokens;
     std::size_t i = 0;
 
@@ -17,7 +20,7 @@ Tokens tokenize(std::string_view line) {
         if (line[i] == '"') {
             const auto end = line.find('"', ++i);
             if (end == std::string_view::npos) {
-                return {};   // незакрытая кавычка: на этапе 3 станет ParseError
+                return Unexpected{ParseError("unterminated quote", std::string(line))};
             }
             tokens.push_back(line.substr(i, end - i));
             i = end + 1;
@@ -29,6 +32,11 @@ Tokens tokenize(std::string_view line) {
         }
     }
     return tokens;
+}
+
+Tokens tokenize(std::string_view line) {
+    // value() бросает хранимую ошибку — ParseError — как есть.
+    return try_tokenize(line).value();
 }
 
 }  // namespace kvs

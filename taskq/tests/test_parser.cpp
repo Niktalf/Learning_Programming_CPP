@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 
-#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -14,17 +13,28 @@ using taskq::parse;
 
 namespace {
 
-// Альтернатива возвращается по значению, а не по ссылке: аргумент — временный
-// optional, и ссылка в него повисла бы в конце полного выражения. Компилятор
+// Альтернатива возвращается по значению, а не по ссылке: аргумент — временная
+// команда, и ссылка в неё повисла бы в конце полного выражения. Компилятор
 // с -Wdangling-reference ловит именно эту ошибку — ту самую, которой посвящён
-// этап. Команды — пары string_view и числа, копировать их дёшево.
+// этап 2. Команды — string_view и числа, копировать их дёшево.
 template <class T>
-T as(const std::optional<Command>& command) {
-    if (!command || !std::holds_alternative<T>(*command)) {
+T as(const Command& command) {
+    if (!std::holds_alternative<T>(command)) {
         ADD_FAILURE() << "unexpected command alternative";
         return T{};
     }
-    return std::get<T>(*command);
+    return std::get<T>(command);
+}
+
+// Причина отказа разбора или пустая строка, если разбор прошёл.
+std::string reason_for(const char* text) {
+    const InputLine line{text};
+    try {
+        static_cast<void>(parse(line));
+    } catch (const taskq::ParseError& e) {
+        return e.reason();
+    }
+    return {};
 }
 
 }  // namespace
@@ -55,8 +65,10 @@ TEST(Parser, PriorityOutOfRangeOrGarbageIsRejected) {
     for (const char* const text : {"SUBMIT build prio=10 x", "SUBMIT build prio=-1 x",
                                    "SUBMIT build prio=5x x", "SUBMIT build prio=5"}) {
         const InputLine line{text};
-        EXPECT_FALSE(parse(line).has_value()) << text;
+        EXPECT_THROW(static_cast<void>(parse(line)), taskq::ParseError) << text;
     }
+    EXPECT_EQ(reason_for("SUBMIT build prio=10 x"), std::string("priority must be 0..9: 10"));
+    EXPECT_EQ(reason_for("SUBMIT build prio=5"), std::string("SUBMIT needs a body"));
 }
 
 TEST(Parser, TaskCommandsTakeNumericId) {
@@ -71,6 +83,9 @@ TEST(Parser, TaskCommandsTakeNumericId) {
 
     const InputLine type{"TYPE 10"};
     EXPECT_EQ(as<taskq::TypeCommand>(parse(type)).id, 10u);
+
+    const InputLine release{"RELEASE 11"};
+    EXPECT_EQ(as<taskq::ReleaseCommand>(parse(release)).id, 11u);
 }
 
 TEST(Parser, BumpDefaultsToOne) {
@@ -86,10 +101,49 @@ TEST(Parser, BumpDefaultsToOne) {
 TEST(Parser, RejectsMalformedInput) {
     for (const char* const text :
          {"", "   ", "SUBMIT", "SUBMIT build", "POLL", "ACK", "ACK abc", "ACK 1 2", "ACK -1",
-          "BUMP 1 x", R"(SUBMIT "build 5 make)", "UNKNOWN 1", "hello"}) {
+          "BUMP 1 x", R"(SUBMIT "build 5 make)", "UNKNOWN 1", "hello", "CREATE",
+          "SUBMITBATCH", "SUBMITBATCH build", "SUBMITBATCH build prio=3"}) {
         const InputLine line{text};
-        EXPECT_FALSE(parse(line).has_value()) << text;
+        EXPECT_THROW(static_cast<void>(parse(line)), taskq::ParseError) << text;
     }
+}
+
+TEST(Parser, ErrorCarriesReasonAndInput) {
+    // Ради этого этап 3 и затевался: пустой optional говорил «не разобрано»,
+    // но не говорил почему.
+    EXPECT_EQ(reason_for("FROB 1"), std::string("unknown command: FROB"));
+    EXPECT_EQ(reason_for("ACK abc"), std::string("task id must be a non-negative number: abc"));
+    EXPECT_EQ(reason_for("ACK 1 2"), std::string("ACK expects a task id"));
+    EXPECT_EQ(reason_for(R"(SUBMIT "   " x)"), std::string("queue name is empty"));
+
+    const InputLine line{"ACK abc"};
+    try {
+        static_cast<void>(parse(line));
+        ADD_FAILURE() << "parse must throw";
+    } catch (const taskq::ParseError& e) {
+        EXPECT_EQ(e.input(), std::string("ACK abc"));
+    }
+}
+
+TEST(Parser, BatchOfItemsWithOptionalPriority) {
+    const InputLine line{R"(SUBMITBATCH build "make all" deploy prio=7 "ship it" build num:3)"};
+    const auto batch = as<taskq::BatchCommand>(parse(line));
+    ASSERT_EQ(batch.items.size(), 3u);
+    EXPECT_EQ(batch.items[0].queue, std::string_view("build"));
+    EXPECT_EQ(batch.items[0].body, std::string_view("make all"));
+    EXPECT_EQ(batch.items[1].priority, 7);
+    EXPECT_EQ(batch.items[1].body, std::string_view("ship it"));
+    EXPECT_EQ(batch.items[2].body, std::string_view("num:3"));
+
+    EXPECT_EQ(reason_for("SUBMITBATCH build x deploy"),
+              std::string("SUBMITBATCH item for deploy has no body"));
+}
+
+TEST(Parser, CreateAndPollTakeQueue) {
+    const InputLine create{R"(CREATE "build tasks")"};
+    EXPECT_EQ(as<taskq::CreateCommand>(parse(create)).queue, std::string_view("build tasks"));
+    EXPECT_EQ(reason_for(R"(CREATE " build")"),
+              std::string("queue name starts or ends with a space"));
 }
 
 TEST(Parser, ResultBorrowsFromInputLine) {

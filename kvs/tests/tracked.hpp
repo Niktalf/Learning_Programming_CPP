@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <utility>
 
@@ -46,6 +47,7 @@ public:
     ~Tracked() = default;
 
     const std::string& str() const noexcept { return data_; }
+    std::size_t size() const noexcept { return data_.size(); }
 
     static void reset() noexcept { copy_counter() = 0; move_counter() = 0; }
     static int copies() noexcept { return copy_counter(); }

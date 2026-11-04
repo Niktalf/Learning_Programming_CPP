@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 #include "taskq/task.hpp"
 
@@ -14,15 +15,25 @@ namespace taskq {
 //
 // Поля хранят std::string_view: команда живёт не дольше строки, из которой
 // разобрана. За это отвечает InputLine, см. parser.hpp.
-struct SubmitCommand { std::string_view queue; int priority; std::string_view body; };
-struct PollCommand   { std::string_view queue; };
-struct AckCommand    { TaskId id; };
-struct FailCommand   { TaskId id; };
-struct StatusCommand { TaskId id; };
-struct TypeCommand   { TaskId id; };
-struct BumpCommand   { TaskId id; std::int64_t by; };
+struct CreateCommand  { std::string_view queue; };
+struct SubmitCommand  { std::string_view queue; int priority; std::string_view body; };
+struct PollCommand    { std::string_view queue; };
+struct AckCommand     { TaskId id; };
+struct FailCommand    { TaskId id; };
+struct StatusCommand  { TaskId id; };
+struct TypeCommand    { TaskId id; };
+struct BumpCommand    { TaskId id; std::int64_t by; };
 
-using Command = std::variant<SubmitCommand, PollCommand, AckCommand, FailCommand,
-                             StatusCommand, TypeCommand, BumpCommand>;
+// Этап 3: возврат аренды — переход Leased -> Pending. Пока его вызывает
+// клиент; на этапе 11 то же самое будет делать сборщик просроченных аренд.
+struct ReleaseCommand { TaskId id; };
+
+// Этап 3: пакетная постановка. Либо поставлены все задачи пакета, либо ни
+// одной — см. BasicTaskStore::submit_batch.
+struct BatchCommand   { std::vector<SubmitCommand> items; };
+
+using Command = std::variant<CreateCommand, SubmitCommand, BatchCommand, PollCommand,
+                             AckCommand, FailCommand, ReleaseCommand, StatusCommand,
+                             TypeCommand, BumpCommand>;
 
 }  // namespace taskq

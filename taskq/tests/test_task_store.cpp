@@ -4,6 +4,7 @@
 #include <utility>
 #include <vector>
 
+#include "taskq/errors.hpp"
 #include "taskq/task_store.hpp"
 #include "tracked.hpp"
 
@@ -14,6 +15,7 @@ using taskq::testing::Tracked;
 
 TEST(TaskStore, SubmitThenPeek) {
     TaskStore store;
+    store.create_queue("build");
     store.submit("build", Task(1, "make all", 5));
 
     // if с инициализацией: результат ограничен областью проверки.
@@ -27,6 +29,7 @@ TEST(TaskStore, SubmitThenPeek) {
 
 TEST(TaskStore, TakeRemovesTaskInFifoOrder) {
     TaskStore store;
+    store.create_queue("build");
     store.submit("build", Task(1, "first", 0));
     store.submit("build", Task(2, "second", 0));
 
@@ -41,23 +44,27 @@ TEST(TaskStore, TakeRemovesTaskInFifoOrder) {
     EXPECT_FALSE(store.take("build").has_value());
 }
 
-TEST(TaskStore, EmptyOptionalStillMeansTwoDifferentThings) {
+TEST(TaskStore, EmptyQueueAndMissingQueueAreDifferent) {
     TaskStore store;
     store.create_queue("build");
 
-    // Очередь есть, но пуста.
+    // Этап 2 сливал эти два случая в пустой optional. Теперь пустая очередь —
+    // пустой optional, штатный ответ, а отсутствующая — исключение.
     EXPECT_FALSE(store.peek("build").has_value());
-    // Очереди нет вовсе.
-    EXPECT_FALSE(store.peek("absent").has_value());
-
-    // Два разных случая неотличимы по возвращаемому значению: optional честнее
-    // сырого указателя, но причины отказа не несёт. Разведём их на этапе 3.
+    EXPECT_THROW(static_cast<void>(store.peek("absent")), taskq::UnknownQueueError);
+    EXPECT_THROW(static_cast<void>(store.take("absent")), taskq::UnknownQueueError);
     EXPECT_EQ(store.queue_count(), 1u);
+}
+
+TEST(TaskStore, SubmitToMissingQueueThrows) {
+    TaskStore store;
+    EXPECT_THROW(store.submit("absent", Task(1, "x")), taskq::UnknownQueueError);
+    EXPECT_EQ(store.queue_count(), 0u);
 }
 
 TEST(TaskStore, PeekingMissingQueueCreatesNothing) {
     TaskStore store;
-    EXPECT_FALSE(store.peek("absent").has_value());
+    EXPECT_THROW(static_cast<void>(store.peek("absent")), taskq::UnknownQueueError);
     // С operator[] на map здесь появилась бы пустая очередь, в которую
     // потом никто не заглянет.
     EXPECT_EQ(store.queue_count(), 0u);
@@ -73,6 +80,7 @@ TEST(TaskStore, CreateQueueReportsWhetherItWasNew) {
 
 TEST(TaskStore, SubmittingTemporaryDoesNotCopy) {
     BasicTaskStore<Tracked> store;
+    store.create_queue("build");
     Tracked::reset();
 
     store.submit("build", Tracked{std::string("payload")});
@@ -83,6 +91,7 @@ TEST(TaskStore, SubmittingTemporaryDoesNotCopy) {
 
 TEST(TaskStore, SubmittingNamedTaskCopiesExactlyOnce) {
     BasicTaskStore<Tracked> store;
+    store.create_queue("build");
     Tracked named{std::string("payload")};
     Tracked::reset();
 
@@ -93,6 +102,7 @@ TEST(TaskStore, SubmittingNamedTaskCopiesExactlyOnce) {
 
 TEST(TaskStore, ExplicitMoveDoesNotCopy) {
     BasicTaskStore<Tracked> store;
+    store.create_queue("build");
     Tracked named{std::string("payload")};
     Tracked::reset();
 
@@ -103,6 +113,7 @@ TEST(TaskStore, ExplicitMoveDoesNotCopy) {
 
 TEST(TaskStore, TakeMovesInsteadOfCopying) {
     BasicTaskStore<Tracked> store;
+    store.create_queue("build");
     store.submit("build", Tracked{std::string("payload")});
     Tracked::reset();
 
@@ -115,6 +126,9 @@ TEST(TaskStore, TakeMovesInsteadOfCopying) {
 
 TEST(TaskStore, ForEachQueueVisitsQueuesInNameOrder) {
     TaskStore store;
+    store.create_queue("b");
+    store.create_queue("a");
+    store.create_queue("c");
     store.submit("b", Task(2, "x"));
     store.submit("a", Task(1, "x"));
     store.submit("c", Task(3, "x"));
@@ -132,6 +146,8 @@ TEST(TaskStore, ForEachQueueVisitsQueuesInNameOrder) {
 
 TEST(TaskStore, CaptureByReferenceAccumulatesButByValueDoesNot) {
     TaskStore store;
+    store.create_queue("a");
+    store.create_queue("b");
     store.submit("a", Task(1, "x"));
     store.submit("a", Task(2, "x"));
     store.submit("b", Task(3, "x"));
@@ -152,6 +168,8 @@ TEST(TaskStore, CaptureByReferenceAccumulatesButByValueDoesNot) {
 
 TEST(TaskStore, FindLocatesPendingTaskById) {
     TaskStore store;
+    store.create_queue("build");
+    store.create_queue("deploy");
     store.submit("build", Task(1, "a", 0));
     store.submit("deploy", Task(2, "b", 0));
 

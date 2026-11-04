@@ -41,9 +41,14 @@ TEST(Lexer, HandlesQuotedArgument) {
     EXPECT_EQ(tokens[1], std::string_view("build tasks"));
 }
 
-TEST(Lexer, UnterminatedQuoteYieldsNothing) {
+TEST(Lexer, UnterminatedQuoteIsParseError) {
     const std::string line = R"(SUBMIT "build 5 make)";
-    EXPECT_TRUE(tokenize(line).empty());
+    // Этап 2 возвращал пустой список — и было не отличить «пусто» от «ошибка».
+    EXPECT_THROW(static_cast<void>(tokenize(line)), taskq::ParseError);
+
+    const auto result = taskq::try_tokenize(line);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().reason(), std::string("unterminated quote"));
 }
 
 TEST(Lexer, IgnoresExtraSpaces) {
