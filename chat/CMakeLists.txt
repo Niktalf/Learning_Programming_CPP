@@ -33,8 +33,8 @@ FetchContent_MakeAvailable(googletest)
 add_library(chat_core
     src/message.cpp
     src/lexer.cpp
-    src/parser.cpp
-    src/executor.cpp
+    src/convert.cpp
+    src/commands.cpp
     src/errors.cpp
     src/server.cpp
     src/log.cpp
@@ -53,8 +53,7 @@ add_executable(chat_tests
     tests/test_owning_buffer.cpp
     tests/test_chat_store.cpp
     tests/test_lexer.cpp
-    tests/test_parser.cpp
-    tests/test_executor.cpp
+    tests/test_commands.cpp
     tests/test_lifetime.cpp
     tests/test_push_order.cpp
     tests/test_errors.cpp
@@ -69,7 +68,10 @@ add_executable(chat_tests
     tests/test_concepts.cpp
     tests/test_history.cpp
     tests/test_message_id.cpp
-    tests/test_generator.cpp)
+    tests/test_generator.cpp
+    tests/test_registry.cpp
+    tests/test_convert.cpp
+    tests/test_static_registry.cpp)
 target_include_directories(chat_tests PRIVATE tests tools)
 target_link_libraries(chat_tests PRIVATE chat_core chat_warnings GTest::gtest_main)
 
@@ -92,7 +94,8 @@ include(GoogleTest)
 gtest_discover_tests(chat_tests)
 gtest_discover_tests(chat_alloc_tests)
 
-# Этап 3, второй путь: цена исключений и Result без ошибок и с ошибками.
+# Этап 3, второй путь: цена исключений и std::expected без ошибок и с
+# ошибками. С этапа 6 меряется лексер: разбор команд ушёл в реестр.
 add_executable(chat_error_cost tools/error_cost.cpp)
 target_include_directories(chat_error_cost PRIVATE tools)
 target_link_libraries(chat_error_cost PRIVATE chat_core chat_warnings)
@@ -141,6 +144,15 @@ chat_expect_compile_failure(chat_concept_diagnostics_fail tests/compile_fail/con
                             "NameLike")
 chat_expect_compile_failure(chat_enable_if_diagnostics_fail tests/compile_fail/enable_if_name.cpp
                             "enable_if")
+
+# Этап 6: обработчик с параметром, который convert не умеет, — концепция
+# CommandHandler отвергает его в строке регистрации.
+chat_expect_compile_failure(chat_bad_handler_fail tests/compile_fail/bad_handler.cpp
+                            "ArgumentsSupported")
+
+# Звёздочка этапа 6: повтор имени в StaticRegistry — static_assert.
+chat_expect_compile_failure(chat_duplicate_command_fail tests/compile_fail/duplicate_command.cpp
+                            "duplicate command name")
 
 # Домашнее задание этапа 5: модули. Включаются явно, -DCHAT_MODULES=ON:
 # поддержка в CMake, Ninja и компиляторах всё ещё неровная, и обычная сборка

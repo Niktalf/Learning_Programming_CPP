@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "taskq/executor.hpp"
+#include "taskq/service.hpp"
 
 namespace taskq {
 

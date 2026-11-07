@@ -26,6 +26,11 @@ inline constexpr std::size_t max_name_length = 32;
 // продолжения, избыточные (overlong) формы и суррогаты — ошибка.
 [[nodiscard]] bool is_valid_utf8(std::string_view text) noexcept;
 
+// Строка целиком: длина и кодировка проверяются до разбора. Фаззер показал,
+// что без этого в историю ложились и мегабайтные строки, и обрезанный UTF-8.
+// С этапа 6 её вызывает реестр команд перед тем, как искать глагол.
+[[nodiscard]] std::optional<std::string> line_problem(std::string_view line);
+
 // Имя комнаты: '#', затем от 1 до 32 латинских букв, цифр, '_' или '-'.
 [[nodiscard]] std::optional<std::string> room_name_problem(std::string_view room);
 

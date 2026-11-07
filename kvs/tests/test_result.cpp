@@ -10,12 +10,11 @@
 
 #include <expected>
 #include <string>
-#include <variant>
+#include <string_view>
 
 #include "kvs/errors.hpp"
-#include "kvs/parser.hpp"
+#include "kvs/lexer.hpp"
 
-using kvs::InputLine;
 using kvs::ParseError;
 
 TEST(Expected, HoldsValueOrError) {
@@ -66,25 +65,27 @@ TEST(Expected, MonadicChaining) {
     EXPECT_EQ(failed.error(), std::string("not a number: x1"));
 }
 
-TEST(TryParse, AgreesWithParseOnValidInput) {
-    for (const char* const text :
-         {"SET k v", "GET k", "DEL k", "EXISTS k", "TYPE k", "INCR k 5", "MSET a 1 b 2"}) {
-        const InputLine line{text};
-        const auto result = kvs::try_parse(line);
+// До этапа 6 здесь сравнивались parse и try_parse. С реестром команд разбор
+// глагола и аргументов ушёл в реестр, а два пути обработки ошибок остались в
+// лексере: tokenize бросает, try_tokenize возвращает.
+TEST(TryTokenize, AgreesWithTokenize) {
+    // Тип элемента — string_view, а не const char*: из указателя строятся
+    // и string_view, и удалённая перегрузка для std::string&&, и вызов
+    // неоднозначен. Удалённая перегрузка участвует в выборе, как и любая.
+    for (const std::string_view text : {"SET k v", R"(SET k "a b")", "", "  GET   k  "}) {
+        const auto result = kvs::try_tokenize(text);
         ASSERT_TRUE(result.has_value()) << text;
-        EXPECT_EQ(result->index(), kvs::parse(line).index()) << text;
+        EXPECT_EQ(*result, kvs::tokenize(text)) << text;
     }
 }
 
-TEST(TryParse, ReturnsTheSameReasonParseThrows) {
-    for (const char* const text :
-         {"", "FOO", "SET k", "INCR k 12abc", "MSET a", R"(SET k "open)"}) {
-        const InputLine line{text};
-        const auto result = kvs::try_parse(line);
+TEST(TryTokenize, ReturnsTheSameReasonTokenizeThrows) {
+    for (const std::string_view text : {R"(SET k "open)", R"(")"}) {
+        const auto result = kvs::try_tokenize(text);
         ASSERT_FALSE(result.has_value()) << text;
         try {
-            static_cast<void>(kvs::parse(line));
-            ADD_FAILURE() << "parse must throw on " << text;
+            static_cast<void>(kvs::tokenize(text));
+            ADD_FAILURE() << "tokenize must throw on " << text;
         } catch (const ParseError& e) {
             EXPECT_EQ(result.error().reason(), e.reason()) << text;
         }
@@ -116,7 +117,7 @@ std::expected<int, ParseError> returning_level(int depth) {
 
 }  // namespace
 
-TEST(TryParse, ErrorThroughTenLevels) {
+TEST(Expected, ErrorThroughTenLevels) {
     EXPECT_THROW(throwing_level(10), ParseError);
 
     const auto result = returning_level(10);

@@ -2,7 +2,7 @@
 
 #include <memory>
 #include <string>
-#include <variant>
+#include <string_view>
 
 #include "kvs/errors.hpp"
 #include "kvs/request_cache.hpp"
@@ -16,7 +16,7 @@ TEST(Cache, LiveRequestIsReused) {
     // Пока первый владелец жив, второй разбор не нужен: тот же объект.
     EXPECT_EQ(first.get(), second.get());
     EXPECT_EQ(cache.hits(), 1u);
-    EXPECT_TRUE(std::holds_alternative<kvs::GetCommand>(first->command()));
+    EXPECT_EQ(first->command().name(), std::string_view("GET"));
 }
 
 TEST(Cache, CacheDoesNotKeepRequestsAlive) {
@@ -66,10 +66,16 @@ TEST(Cache, ParseErrorIsNotCached) {
     EXPECT_EQ(cache.size(), 0u);
 }
 
-TEST(Cache, CommandPointsIntoItsOwnLine) {
+TEST(Cache, CachedCommandOutlivesNothingItBorrows) {
+    // Связанная команда смотрит внутрь строки и токенов своего Request. Пока
+    // запрос жив, исполнять её можно сколько угодно раз — в том числе MSET,
+    // чей Rest смотрит в вектор токенов. Под санитайзером адресов висячее
+    // представление здесь было бы видно сразу.
     RequestCache cache;
-    const auto request = cache.get("GET key");
-    const auto& get = std::get<kvs::GetCommand>(request->command());
-    // Команда и строка живут в одном объекте: представление указывает внутрь.
-    EXPECT_EQ(get.key.data(), request->text().data() + 4);
+    const auto request = cache.get("MSET alpha 1 beta 2");
+    kvs::Store store;
+    static_cast<void>(request->command()(store));
+    static_cast<void>(cache.get("GET padding-to-move-memory-around"));
+    static_cast<void>(request->command()(store));
+    EXPECT_EQ(store.size(), 2u);
 }

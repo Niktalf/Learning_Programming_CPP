@@ -93,4 +93,15 @@ std::optional<std::string> worker_name_problem(std::string_view worker) {
     return name_problem(worker, "worker name");
 }
 
+std::optional<std::string> line_problem(std::string_view line) {
+    if (line.size() > max_line_length) {
+        return "line too long: " + std::to_string(line.size()) + " bytes, limit is " +
+               std::to_string(max_line_length);
+    }
+    if (!is_valid_utf8(line)) {
+        return std::string("invalid UTF-8 (use bin: for binary payloads)");
+    }
+    return std::nullopt;
+}
+
 }  // namespace taskq

@@ -20,7 +20,7 @@ inline int& move_counter() {
 }
 
 // Инструментированный тип-шпион: считает копирования и перемещения.
-// Живёт только в тестах, поэтому Value остаётся написанным по правилу нуля.
+// Живёт только в тестах, поэтому Message остаётся написанным по правилу нуля.
 class Tracked {
 public:
     Tracked() = default;
@@ -56,4 +56,4 @@ private:
 };
 
 }  // namespace testing
-}  // namespace kvs
+}  // namespace chat

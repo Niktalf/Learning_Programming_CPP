@@ -6,16 +6,20 @@
 #include <string>
 #include <string_view>
 
-#include "kvs/command.hpp"
-#include "kvs/parser.hpp"
+#include "kvs/commands.hpp"
+#include "kvs/input_line.hpp"
+#include "kvs/lexer.hpp"
+#include "kvs/registry.hpp"
 
 namespace kvs {
 
-// Разобранный запрос: строка и команда вместе, в одном объекте.
+// Разобранный запрос: строка, её токены и связанная команда — в одном объекте.
 //
-// Почему вместе. Команда смотрит внутрь строки через string_view — это
-// защита этапа 2. Значит кэшировать команду отдельно от строки нельзя: она
-// повиснет. Request владеет обоими, и они живут и умирают одновременно.
+// Почему вместе. Аргументы связанной команды смотрят внутрь строки через
+// string_view — это защита этапа 2, — а Rest у MSET смотрит ещё и в вектор
+// токенов. Значит кэшировать команду отдельно от строки и токенов нельзя:
+// она повиснет. Request владеет всеми тремя, и они живут и умирают
+// одновременно.
 //
 // Объект нельзя ни копировать, ни перемещать — наследство InputLine. Поэтому
 // он создаётся сразу в куче через std::make_shared и дальше передаётся только
@@ -23,17 +27,23 @@ namespace kvs {
 class Request {
 public:
     // Бросает ParseError: неразобранный запрос не создаётся вовсе.
-    explicit Request(std::string text) : line_(std::move(text)), command_(parse(line_)) {}
+    explicit Request(std::string text)
+        : line_(std::move(text)),
+          tokens_(tokenize(line_.view())),
+          command_(commands().bind(tokens_, line_.view())) {}
 
     Request(const Request&) = delete;
     Request& operator=(const Request&) = delete;
 
-    [[nodiscard]] const Command& command() const noexcept { return command_; }
+    [[nodiscard]] const CommandRegistry<Store>::Bound& command() const noexcept { return command_; }
     [[nodiscard]] std::string_view text() const noexcept { return line_.view(); }
 
 private:
-    InputLine line_;    // объявлен первым: инициализируется раньше команды,
-    Command command_;   // которая смотрит внутрь него
+    // Порядок объявления — порядок инициализации, и он существен: каждое
+    // следующее поле смотрит внутрь предыдущих.
+    InputLine line_;
+    Tokens tokens_;
+    CommandRegistry<Store>::Bound command_;
 };
 
 // Кэш разобранных запросов на weak_ptr.

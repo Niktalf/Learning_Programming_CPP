@@ -9,7 +9,7 @@
 
 #include "kvs/errors.hpp"
 #include "kvs/file.hpp"
-#include "kvs/parser.hpp"
+#include "kvs/commands.hpp"
 
 namespace kvs {
 namespace {
@@ -61,10 +61,10 @@ Server::Server(const Options& options) : store_(make_store(options.memory_limit)
         for (std::size_t i = 0; i < records.size(); ++i) {
             // Восстановление — не граница: неудача здесь означает
             // испорченный журнал, и сервер запускаться не должен. Контекст
-            // прикладывается тем же std::throw_with_nested, что и в execute.
+            // прикладывается тем же std::throw_with_nested, что и при
+            // исполнении команды.
             try {
-                const InputLine line{records[i]};
-                static_cast<void>(execute(store_, parse(line)));
+                static_cast<void>(execute(store_, records[i]));
             } catch (...) {
                 std::throw_with_nested(KvError("while replaying " + path.string() + " line " +
                                                std::to_string(i + 1)));
@@ -79,7 +79,7 @@ Response Server::handle(std::string line) {
         // Владелец запроса — эта функция, пока команда исполняется. Кэш
         // только наблюдает через weak_ptr.
         const std::shared_ptr<const Request> request = cache_.get(line);
-        Response response = execute(store_, request->command());
+        Response response = request->command()(store_);
         // В журнал — только успешные изменения: неудачная команда при
         // восстановлении снова бы не удалась.
         //
@@ -88,7 +88,7 @@ Response Server::handle(std::string line) {
         // Журнал до исполнения (write-ahead) этого не допускает, но требует
         // отката по журналу. К этому вопросу курс вернётся на этапе 17,
         // вместе со снапшотами.
-        if (log_ && modifies(request->command())) {
+        if (log_ && request->command().writes()) {
             log_->append(request->text());
         }
         return response;

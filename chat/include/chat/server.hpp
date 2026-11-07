@@ -5,7 +5,7 @@
 #include <string>
 
 #include "chat/chat_store.hpp"
-#include "chat/executor.hpp"
+#include "chat/commands.hpp"
 #include "chat/log.hpp"
 
 namespace chat {

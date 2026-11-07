@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-#include "taskq/executor.hpp"
+#include "taskq/service.hpp"
 #include "taskq/handler.hpp"
 #include "taskq/task_key.hpp"
 

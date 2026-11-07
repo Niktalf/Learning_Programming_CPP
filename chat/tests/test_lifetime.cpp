@@ -5,7 +5,7 @@
 #include <type_traits>
 
 #include "chat/lexer.hpp"
-#include "chat/parser.hpp"
+#include "chat/input_line.hpp"
 
 // Дракон этапа: висячее представление.
 //
@@ -14,13 +14,8 @@
 //     const auto tokens = tokenize(std::string("msg #general hello"));
 //     use(tokens[1]);        // временная строка уже разрушена
 //
-// или так:
-//
-//     const auto command = parse(InputLine{"msg #general hello"});
-//     use(command);          // InputLine разрушен в конце полного выражения
-//
-// Оба вызова не компилируются: перегрузки для временных объектов удалены.
-// Это и есть архитектурное исправление — ошибка стала невозможной по
+// Вызов не компилируется: перегрузка для временной строки удалена. Это
+// архитектурное исправление — ошибка стала невозможной по
 // построению, а не «мы договорились так не писать».
 //
 // Чтобы увидеть, чем всё кончается без этой защиты, соберите цель
@@ -36,23 +31,11 @@ template <class T>
 struct tokenize_accepts<T, std::void_t<decltype(chat::tokenize(std::declval<T>()))>>
     : std::true_type {};
 
-template <class T, class = void>
-struct parse_accepts : std::false_type {};
-
-template <class T>
-struct parse_accepts<T, std::void_t<decltype(chat::parse(std::declval<T>()))>>
-    : std::true_type {};
-
 }  // namespace
 
 TEST(Lifetime, TokenizeRejectsTemporaryString) {
     EXPECT_TRUE(tokenize_accepts<std::string_view>::value);
     EXPECT_FALSE(tokenize_accepts<std::string&&>::value);
-}
-
-TEST(Lifetime, ParseRejectsTemporaryInputLine) {
-    EXPECT_TRUE(parse_accepts<const chat::InputLine&>::value);
-    EXPECT_FALSE(parse_accepts<chat::InputLine&&>::value);
 }
 
 TEST(Lifetime, InputLineIsNeitherCopyableNorMovable) {

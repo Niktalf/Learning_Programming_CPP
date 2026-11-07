@@ -10,12 +10,11 @@
 
 #include <expected>
 #include <string>
-#include <variant>
+#include <string_view>
 
 #include "taskq/errors.hpp"
-#include "taskq/parser.hpp"
+#include "taskq/lexer.hpp"
 
-using taskq::InputLine;
 using taskq::ParseError;
 
 TEST(Expected, HoldsValueOrError) {
@@ -66,28 +65,28 @@ TEST(Expected, MonadicChaining) {
     EXPECT_EQ(failed.error(), std::string("not a number: x1"));
 }
 
-TEST(TryParse, AgreesWithParseOnValidInput) {
-    for (const char* const text :
-         {"CREATE build", "SUBMIT build make all", "SUBMIT build prio=3 x", "POLL build",
-          "ACK 1", "FAIL 1", "RELEASE 1", "STATUS 1", "TYPE 1", "BUMP 1 5", "LIST build prio>=3 type=text limit=5",
-          R"(SUBMITBATCH build "a b" deploy prio=2 c)"}) {
-        const InputLine line{text};
-        const auto result = taskq::try_parse(line);
+// До этапа 6 здесь сравнивались parse и try_parse. С реестром команд разбор
+// глагола и аргументов ушёл в реестр, а два пути обработки ошибок остались в
+// лексере: tokenize бросает, try_tokenize возвращает.
+//
+// Тип элемента — string_view, а не const char*: из указателя строятся и
+// string_view, и удалённая перегрузка для std::string&&, и вызов
+// неоднозначен. Удалённая перегрузка участвует в выборе, как и любая.
+TEST(TryTokenize, AgreesWithTokenize) {
+    for (const std::string_view text : {"CREATE build", R"(SUBMIT "build tasks" x)", "", "ACK 1"}) {
+        const auto result = taskq::try_tokenize(text);
         ASSERT_TRUE(result.has_value()) << text;
-        EXPECT_EQ(result->index(), taskq::parse(line).index()) << text;
+        EXPECT_EQ(*result, taskq::tokenize(text)) << text;
     }
 }
 
-TEST(TryParse, ReturnsTheSameReasonParseThrows) {
-    for (const char* const text :
-         {"", "FROB 1", "SUBMIT", "SUBMIT build prio=10 x", "SUBMIT build prio=5", "ACK x",
-          R"(CREATE "   ")", "SUBMITBATCH build", R"(POLL "open)", "SUBMIT build \xd0"}) {
-        const InputLine line{text};
-        const auto result = taskq::try_parse(line);
+TEST(TryTokenize, ReturnsTheSameReasonTokenizeThrows) {
+    for (const std::string_view text : {R"(SUBMIT "open)", R"(")"}) {
+        const auto result = taskq::try_tokenize(text);
         ASSERT_FALSE(result.has_value()) << text;
         try {
-            static_cast<void>(taskq::parse(line));
-            ADD_FAILURE() << "parse must throw on " << text;
+            static_cast<void>(taskq::tokenize(text));
+            ADD_FAILURE() << "tokenize must throw on " << text;
         } catch (const ParseError& e) {
             EXPECT_EQ(result.error().reason(), e.reason()) << text;
         }
@@ -119,7 +118,7 @@ std::expected<int, ParseError> returning_level(int depth) {
 
 }  // namespace
 
-TEST(TryParse, ErrorThroughTenLevels) {
+TEST(Expected, ErrorThroughTenLevels) {
     EXPECT_THROW(throwing_level(10), ParseError);
 
     const auto result = returning_level(10);

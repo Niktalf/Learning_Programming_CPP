@@ -31,17 +31,18 @@ FetchContent_Declare(googletest
 FetchContent_MakeAvailable(googletest)
 
 add_library(taskq_core
-    src/payload.cpp
-    src/task.cpp
-    src/log.cpp
-    src/task_key.cpp
-    src/lexer.cpp
-    src/parser.cpp
-    src/executor.cpp
-    src/errors.cpp
-    src/handler.cpp
-    src/validate.cpp
-    src/owning_buffer.cpp)
+        src/payload.cpp
+        src/task.cpp
+        src/log.cpp
+        src/task_key.cpp
+        src/lexer.cpp
+        src/convert.cpp
+        src/commands.cpp
+        src/service.cpp
+        src/errors.cpp
+        src/handler.cpp
+        src/validate.cpp
+        src/owning_buffer.cpp)
 target_include_directories(taskq_core PUBLIC include)
 target_link_libraries(taskq_core PRIVATE taskq_warnings)
 
@@ -50,29 +51,31 @@ target_link_libraries(taskq_cli PRIVATE taskq_core taskq_warnings)
 
 enable_testing()
 add_executable(taskq_tests
-    tests/test_task.cpp
-    tests/test_owning_buffer.cpp
-    tests/test_task_store.cpp
-    tests/test_lexer.cpp
-    tests/test_parser.cpp
-    tests/test_executor.cpp
-    tests/test_lifetime.cpp
-    tests/test_push_order.cpp
-    tests/test_errors.cpp
-    tests/test_state.cpp
-    tests/test_validate.cpp
-    tests/test_guarantee.cpp
-    tests/test_handler.cpp
-    tests/test_result.cpp
-    tests/test_fuzz.cpp
-    tests/test_payload.cpp
-    tests/test_workers.cpp
-    tests/test_log.cpp
-    tests/test_cycle.cpp
-    tests/test_concepts.cpp
-    tests/test_list.cpp
-    tests/test_task_key.cpp
-    tests/test_generator.cpp)
+        tests/test_task.cpp
+        tests/test_owning_buffer.cpp
+        tests/test_task_store.cpp
+        tests/test_lexer.cpp
+        tests/test_commands.cpp
+        tests/test_lifetime.cpp
+        tests/test_push_order.cpp
+        tests/test_errors.cpp
+        tests/test_state.cpp
+        tests/test_validate.cpp
+        tests/test_guarantee.cpp
+        tests/test_handler.cpp
+        tests/test_result.cpp
+        tests/test_fuzz.cpp
+        tests/test_payload.cpp
+        tests/test_workers.cpp
+        tests/test_log.cpp
+        tests/test_cycle.cpp
+        tests/test_concepts.cpp
+        tests/test_list.cpp
+        tests/test_task_key.cpp
+        tests/test_generator.cpp
+        tests/test_registry.cpp
+        tests/test_convert.cpp
+        tests/test_static_registry.cpp)
 target_include_directories(taskq_tests PRIVATE tests tools)
 target_link_libraries(taskq_tests PRIVATE taskq_core taskq_warnings GTest::gtest_main)
 
@@ -95,7 +98,8 @@ include(GoogleTest)
 gtest_discover_tests(taskq_tests)
 gtest_discover_tests(taskq_alloc_tests)
 
-# Этап 3, второй путь: цена исключений и Result без ошибок и с ошибками.
+# Этап 3, второй путь: цена исключений и std::expected без ошибок и с
+# ошибками. С этапа 6 меряется лексер: разбор команд ушёл в реестр.
 add_executable(taskq_error_cost tools/error_cost.cpp)
 target_include_directories(taskq_error_cost PRIVATE tools)
 target_link_libraries(taskq_error_cost PRIVATE taskq_core taskq_warnings)
@@ -144,6 +148,15 @@ taskq_expect_compile_failure(taskq_concept_diagnostics_fail tests/compile_fail/c
                              "NameLike")
 taskq_expect_compile_failure(taskq_enable_if_diagnostics_fail tests/compile_fail/enable_if_name.cpp
                              "enable_if")
+
+# Этап 6: обработчик с параметром, который convert не умеет, — концепция
+# CommandHandler отвергает его в строке регистрации.
+taskq_expect_compile_failure(taskq_bad_handler_fail tests/compile_fail/bad_handler.cpp
+                             "ArgumentsSupported")
+
+# Звёздочка этапа 6: повтор имени в StaticRegistry — static_assert.
+taskq_expect_compile_failure(taskq_duplicate_command_fail tests/compile_fail/duplicate_command.cpp
+                             "duplicate command name")
 
 # Домашнее задание этапа 5: модули. Включаются явно, -DTASKQ_MODULES=ON:
 # поддержка в CMake, Ninja и компиляторах всё ещё неровная, и обычная сборка

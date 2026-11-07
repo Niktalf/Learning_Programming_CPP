@@ -14,7 +14,8 @@
 
 namespace {
 
-// Этап 5: стандарт C++23, вывод через std::print. Текст справки — одна
+// Этап 5: стандарт C++23, вывод через std::print. Этап 6: команды
+// APPEND, STRLEN и GETSET — каждая добавлена одной строкой в реестр. Текст справки — одна
 // сырая строка: так её видно целиком, как она будет напечатана.
 void print_help() {
     std::print(R"(Commands:
@@ -29,6 +30,9 @@ void print_help() {
   LLEN <key>                 length of a list
   KEYS [pattern] [limit]     list keys matching a glob, * and ?
   VERSION <key>              generation and timestamp of the record
+  APPEND <key> <suffix>      append to a string, returns the new length
+  STRLEN <key>               length of a string, 0 if absent
+  GETSET <key> <value>       store a value, return the previous one
   MEMORY                     used bytes and the limit
   DEMO                       capture by reference vs by value
   HELP / QUIT
@@ -109,7 +113,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::println("KVS, stage 5");
+    std::println("KVS, stage 6");
     print_help();
 
     std::string raw;   // объявлена до цикла: в неё читает std::getline

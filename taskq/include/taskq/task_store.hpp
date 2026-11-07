@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -35,6 +36,7 @@ template <QueuedTask T>
 class BasicTaskStore {
 public:
     using Queue = std::vector<T>;
+    using Clock = std::chrono::system_clock;
 
     bool create_queue(std::string queue) {
         // try_emplace из C++17: значение конструируется только при вставке.
@@ -94,36 +96,87 @@ public:
     //
     // Возвращается копия задачи, а не ссылка: std::optional<T&> стандартом не
     // предусмотрен.
-    [[nodiscard]] std::optional<T> peek(std::string_view queue) const {
+    //
+    // Этап 6: «следующая» — среди готовых к выдаче: задача, отложенная DELAY
+    // до момента позже now, пропускается. Поэтому now — параметр: тесты и
+    // сервис передают свои часы.
+    [[nodiscard]] std::optional<T> peek(std::string_view queue, Timestamp now = Clock::now()) const {
         const Queue& tasks = existing(queue);
-        if (tasks.empty()) {
+        const auto next = next_in(tasks, now);
+        if (next == tasks.end()) {
             return std::nullopt;
         }
-        return *next_in(tasks);
+        return *next;
     }
 
     // Номер первой задачи без копирования самой задачи. Нужен POLL, чтобы
     // подготовить место под задачу до того, как забрать её из очереди.
-    [[nodiscard]] std::optional<TaskId> front_id(std::string_view queue) const {
+    [[nodiscard]] std::optional<TaskId> front_id(std::string_view queue, Timestamp now = Clock::now()) const {
         const Queue& tasks = existing(queue);
-        if (tasks.empty()) {
+        const auto next = next_in(tasks, now);
+        if (next == tasks.end()) {
             return std::nullopt;
         }
-        return next_in(tasks)->id();
+        return next->id();
     }
 
     // Задача возвращается перемещением, без копии. Если перемещение T не
     // бросает, не бросает и take на непустой очереди: erase в начале вектора
     // лишь сдвигает элементы перемещением.
-    [[nodiscard]] std::optional<T> take(std::string_view queue) {
+    [[nodiscard]] std::optional<T> take(std::string_view queue, Timestamp now = Clock::now()) {
         Queue& tasks = existing(queue);
-        if (tasks.empty()) {
+        const auto next = next_in(tasks, now);
+        if (next == tasks.end()) {
             return std::nullopt;
         }
-        const auto next = next_in(tasks);
         T taken = std::move(*next);
         tasks.erase(next);
+        not_before_.erase(taken.id());   // erase по ключу не бросает: сравнение целых
         return taken;
+    }
+
+    // --- Этап 6, домашнее задание: DELAY и PURGE -----------------------
+    //
+    // Отложить ожидающую задачу: до момента until её не выдадут. false —
+    // задачи нет ни в одной очереди. Отложенная задача остаётся в своей
+    // очереди на своём месте: её видит LIST, но не POLL и не PEEK — PEEK
+    // показывает ровно то, что выдал бы POLL.
+    //
+    // Почему отдельная таблица, а не поле задачи. Выборка «следующей» —
+    // минимум ключа (приоритет, порядок постановки) среди готовых. Пока
+    // очередь — вектор с линейным поиском, отложенную задачу можно просто
+    // пропустить. На этапе 7 вектор сменит приоритетная очередь, и
+    // пропустить вершину кучи нельзя: отложенная задача с высоким
+    // приоритетом закупорит очередь. Тогда понадобится второй индекс — по
+    // времени готовности, — и задача будет переходить из него в кучу, когда
+    // наступит её время. not_before_ — зачаток этого индекса. Вывод
+    // подробнее — в docs/registry.md.
+    bool delay(TaskId id, Timestamp until) {
+        if (!queue_of(id)) {
+            return false;
+        }
+        not_before_.insert_or_assign(id, until);
+        return true;
+    }
+
+    // Когда отложенная задача станет готова, или пусто, если не отложена.
+    [[nodiscard]] std::optional<Timestamp> not_before(TaskId id) const {
+        const auto it = not_before_.find(id);
+        return it == not_before_.end() ? std::nullopt : std::optional<Timestamp>(it->second);
+    }
+
+    // Убрать из очереди все ожидающие задачи и вернуть их вызывающему.
+    // Сильная гарантия: очередь отдаётся целиком обменом с пустой — swap
+    // вектора не бросает, — а записи об отложенных стираются erase по ключу,
+    // который тоже не бросает.
+    [[nodiscard]] Queue purge(std::string_view queue) {
+        Queue& tasks = existing(queue);
+        Queue removed;
+        removed.swap(tasks);
+        for (const T& task : removed) {
+            not_before_.erase(task.id());
+        }
+        return removed;
     }
 
     // --- Этап 5: LIST через ranges --------------------------------------
@@ -204,6 +257,19 @@ public:
         return std::nullopt;
     }
 
+    // Этап 6: константная перегрузка — для TYPE, который теперь константный
+    // метод сервиса.
+    [[nodiscard]] std::optional<std::reference_wrapper<const T>> find(TaskId id) const {
+        for (const auto& [name, tasks] : queues_) {
+            for (const T& task : tasks) {
+                if (task.id() == id) {
+                    return std::cref(task);
+                }
+            }
+        }
+        return std::nullopt;
+    }
+
     // Имя очереди, в которой ждёт задача, — для STATUS.
     [[nodiscard]] std::optional<std::string> queue_of(TaskId id) const {
         for (const auto& [name, tasks] : queues_) {
@@ -242,9 +308,19 @@ private:
     // Следующая задача по ключу выборки. Линейный поиск — сознательно: на
     // этапе 7 его заменит приоритетная очередь. Очередь не пуста: проверяет
     // вызывающий.
+    //
+    // Этап 6: среди готовых — пропускаются задачи, отложенные позже now.
+    // Отложенная задача не участвует в сравнении вовсе: её ключ не важен,
+    // пока не наступило её время. Пустая очередь или одни отложенные —
+    // итератор end.
     template <class Tasks>
-    [[nodiscard]] static auto next_in(Tasks& tasks) {
-        return std::ranges::min_element(tasks, {}, [](const T& task) { return task.key(); });
+    [[nodiscard]] auto next_in(Tasks& tasks, Timestamp now) const {
+        auto ready = tasks | std::views::filter([this, now](const T& task) {
+                         const auto it = not_before_.find(task.id());
+                         return it == not_before_.end() || it->second <= now;
+                     });
+        const auto best = std::ranges::min_element(ready, {}, [](const T& task) { return task.key(); });
+        return best.base();
     }
 
     // Одна точка, где отсутствие очереди превращается в исключение.
@@ -267,6 +343,7 @@ private:
     // std::less<> включает разнородный поиск: методы принимают string_view.
     using Map = std::map<std::string, Queue, std::less<>>;
     Map queues_;
+    std::map<TaskId, Timestamp> not_before_;   // этап 6: отложенные DELAY
     std::uint64_t seq_ = 0;   // последний выданный номер постановки
 };
 

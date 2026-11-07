@@ -3,7 +3,8 @@
 ## Что сделано
 
 Сопоставление с образцом для `KEYS` вынесено в именованный модуль
-`taskq.state` (`modules/taskq.state.cppm`), и программа `taskq_modules_demo`
+`taskq.state` (`modules/taskq.state.cppm`; на этапе 6 в модуль, как и в
+`state.hpp`, добавлено состояние `Cancelled`), и программа `taskq_modules_demo`
 импортирует его. Эксперимент включается явно:
 
 ```bash

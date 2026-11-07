@@ -12,7 +12,8 @@
 
 namespace {
 
-// Этап 5: стандарт C++23, вывод через std::print. Текст справки — одна
+// Этап 5: стандарт C++23, вывод через std::print. Этап 6: /kick и
+// /rooms — каждая добавлена одной строкой в реестр. Текст справки — одна
 // сырая строка: так её видно целиком, как она будет напечатана.
 void print_help() {
     std::print(R"(Commands:
@@ -26,6 +27,8 @@ void print_help() {
   /react <#room> <index> [n]        add to a reaction counter
   /topic <#room> ["topic"]          show or set the topic
   /nick <nickname>                  change your nickname
+  /kick <#room> <nick>              remove a member from a room
+  /rooms                            list rooms with member counts
   DEMO                              capture by reference vs by value
   HELP / QUIT
 )");
@@ -106,7 +109,7 @@ int main(int argc, char* argv[]) {
     // Реестр пуст, ник не может быть занят.
     chat::Session session = server->login(arguments->nick);
 
-    std::println("CHAT, stage 5, you are {}", session.nick);
+    std::println("CHAT, stage 6, you are {}", session.nick);
     print_help();
 
     std::string raw;   // объявлена до цикла: в неё читает std::getline

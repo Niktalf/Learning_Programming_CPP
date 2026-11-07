@@ -3,9 +3,11 @@
 
 #include <gtest/gtest.h>
 
+#include <exception>
 #include <string>
 
-#include "chat/parser.hpp"
+#include "chat/commands.hpp"
+#include "chat/errors.hpp"
 #include "chat/validate.hpp"
 
 TEST(Validate, Utf8AcceptsWellFormedText) {
@@ -54,12 +56,19 @@ TEST(Validate, TextWithoutControlCharacters) {
 }
 
 TEST(Validate, ParserRejectsWhatTheFuzzerFound) {
+    // С этапа 6 разбирает реестр; ошибку аргумента он оборачивает
+    // подсказкой, поэтому причина — по корню цепочки.
     const auto reason = [](const std::string& text) {
-        const chat::InputLine line{text};
         try {
-            static_cast<void>(chat::parse(line));
-        } catch (const chat::ParseError& e) {
-            return e.reason();
+            static_cast<void>(chat::commands().bind(text));
+        } catch (...) {
+            try {
+                std::rethrow_exception(chat::root_cause(std::current_exception()));
+            } catch (const chat::ParseError& e) {
+                return e.reason();
+            } catch (...) {
+                return std::string("not a parse error");
+            }
         }
         return std::string("parsed");
     };

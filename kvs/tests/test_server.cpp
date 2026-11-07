@@ -82,8 +82,10 @@ TEST(Server, MemoryLimitBecomesResponse) {
     EXPECT_TRUE(server.handle("SET k 1234").ok);
     const auto r = server.handle("MSET a 1 b 1234567");
     EXPECT_FALSE(r.ok);
+    // Контекст с этапа 6 одинаков для всех команд — глагол и первый
+    // аргумент. До реестра MSET называл первые два ключа.
     EXPECT_EQ(r.text, std::string("ERR out of memory: 15 bytes required, limit is 8 "
-                                  "(while executing MSET a b)"));
+                                  "(while executing MSET a)"));
     EXPECT_EQ(server.store().size(), 1u);   // MSET не записал ни одной пары
 }
 

@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -30,6 +31,34 @@ using Tokens = std::vector<std::string_view>;
 
 [[nodiscard]] Tokens tokenize(std::string_view line,
                               std::size_t max_tokens = (std::numeric_limits<std::size_t>::max)());
+
+// Этап 6: курсор по строке — токены по одному. Нужен реестру команд: у
+// SUBMIT необязательный prio=N стоит перед телом, и где начинается тело —
+// остаток строки, — становится ясно, только когда посмотрели на следующий
+// токен. tokenize с заранее заданным числом токенов этого не выразит:
+// разрезав строку на один токен больше, он попытался бы разобрать кавычки в
+// теле, которое разбирать нельзя.
+//
+// Курсор смотрит в строку и не владеет ею: живёт не дольше строки.
+class TokenCursor {
+public:
+    explicit TokenCursor(std::string_view line) noexcept : line_(line) {}
+
+    // Следующий токен без продвижения; пустой — строка кончилась. Бросает
+    // ParseError на незакрытой кавычке.
+    [[nodiscard]] std::optional<std::string_view> peek();
+
+    // Следующий токен с продвижением.
+    std::optional<std::string_view> next();
+
+    // Остаток строки как есть — без разбора кавычек, без начальных
+    // пробелов. После него курсор в конце.
+    [[nodiscard]] std::string_view rest() noexcept;
+
+private:
+    std::string_view line_;
+    std::size_t position_ = 0;
+};
 
 // Перегрузка для временной строки удалена: результат смотрел бы на строку,
 // разрушенную в конце полного выражения.

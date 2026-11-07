@@ -12,8 +12,10 @@ using taskq::modules::State;
 static_assert(taskq::modules::allowed(State::Leased, State::Pending));
 
 int main() {
-    for (const State from : {State::Pending, State::Leased, State::Done, State::Failed}) {
-        for (const State to : {State::Pending, State::Leased, State::Done, State::Failed}) {
+    constexpr State all[] = {State::Pending, State::Leased, State::Done, State::Failed,
+                             State::Cancelled};
+    for (const State from : all) {
+        for (const State to : all) {
             if (taskq::modules::allowed(from, to)) {
                 std::println("{} -> {}", taskq::modules::name(from), taskq::modules::name(to));
             }

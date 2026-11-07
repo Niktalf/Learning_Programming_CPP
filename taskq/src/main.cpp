@@ -7,7 +7,7 @@
 #include <string_view>
 #include <utility>
 
-#include "taskq/executor.hpp"
+#include "taskq/service.hpp"
 #include "taskq/handler.hpp"
 
 namespace {
@@ -36,6 +36,9 @@ void print_help() {
   WORKER <name>                    register a worker
   GONE <name>                      the worker disappeared
   REAP                             requeue tasks of vanished workers
+  DELAY <id> <delay>               hold a pending task back: 90, 90s, 15m, 2h
+  PURGE <queue>                    cancel all pending tasks of a queue
+  PEEK <queue>                     the task POLL would lease, without leasing
   DEMO                             capture by reference vs by value
   HELP / QUIT
 )");
@@ -87,7 +90,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::println("TASKQ, stage 5");
+    std::println("TASKQ, stage 6");
     print_help();
 
     std::string raw;   // объявлена до цикла: в неё читает std::getline

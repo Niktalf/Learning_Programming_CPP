@@ -5,7 +5,8 @@
 #include <type_traits>
 
 #include "kvs/lexer.hpp"
-#include "kvs/parser.hpp"
+#include "kvs/input_line.hpp"
+#include "kvs/registry.hpp"
 
 // Дракон этапа: висячее представление.
 //
@@ -14,13 +15,12 @@
 //     const auto tokens = tokenize(std::string("SET key value"));
 //     use(tokens[1]);        // временная строка уже разрушена
 //
-// или так:
+// Вызов не компилируется: перегрузка для временной строки удалена.
 //
-//     const auto command = parse(InputLine{"SET key value"});
-//     use(command);          // InputLine разрушен в конце полного выражения
-//
-// Оба вызова не компилируются: перегрузки для временных объектов удалены.
-// Это и есть архитектурное исправление — ошибка стала невозможной по
+// С этапа 6 команду разбирает реестр, и его аргументы — тоже string_view
+// внутрь строки. Висеть им не даёт Request: строка, токены и связанная
+// команда живут в одном объекте (tests/test_cache.cpp).
+// Это архитектурное исправление — ошибка стала невозможной по
 // построению, а не «мы договорились так не писать».
 //
 // Чтобы увидеть, чем всё кончается без этой защиты, соберите цель
@@ -36,23 +36,11 @@ template <class T>
 struct tokenize_accepts<T, std::void_t<decltype(kvs::tokenize(std::declval<T>()))>>
     : std::true_type {};
 
-template <class T, class = void>
-struct parse_accepts : std::false_type {};
-
-template <class T>
-struct parse_accepts<T, std::void_t<decltype(kvs::parse(std::declval<T>()))>>
-    : std::true_type {};
-
 }  // namespace
 
 TEST(Lifetime, TokenizeRejectsTemporaryString) {
     EXPECT_TRUE(tokenize_accepts<std::string_view>::value);
     EXPECT_FALSE(tokenize_accepts<std::string&&>::value);
-}
-
-TEST(Lifetime, ParseRejectsTemporaryInputLine) {
-    EXPECT_TRUE(parse_accepts<const kvs::InputLine&>::value);
-    EXPECT_FALSE(parse_accepts<kvs::InputLine&&>::value);
 }
 
 TEST(Lifetime, InputLineIsNeitherCopyableNorMovable) {

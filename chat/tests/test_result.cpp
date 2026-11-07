@@ -10,12 +10,11 @@
 
 #include <expected>
 #include <string>
-#include <variant>
+#include <string_view>
 
 #include "chat/errors.hpp"
-#include "chat/parser.hpp"
+#include "chat/lexer.hpp"
 
-using chat::InputLine;
 using chat::ParseError;
 
 TEST(Expected, HoldsValueOrError) {
@@ -66,27 +65,28 @@ TEST(Expected, MonadicChaining) {
     EXPECT_EQ(failed.error(), std::string("not a number: x1"));
 }
 
-TEST(TryParse, AgreesWithParseOnValidInput) {
-    for (const char* const text :
-         {"/join #a", "/leave #a", "/msg #a,#b hi there", "/who #a", "/history #a 3",
-          "/type #a 0", "/react #a 1 2", R"(/topic #a "new topic")", "/nick alicia"}) {
-        const InputLine line{text};
-        const auto result = chat::try_parse(line);
+// До этапа 6 здесь сравнивались parse и try_parse. С реестром команд разбор
+// глагола и аргументов ушёл в реестр, а два пути обработки ошибок остались в
+// лексере: tokenize бросает, try_tokenize возвращает.
+//
+// Тип элемента — string_view, а не const char*: из указателя строятся и
+// string_view, и удалённая перегрузка для std::string&&, и вызов
+// неоднозначен. Удалённая перегрузка участвует в выборе, как и любая.
+TEST(TryTokenize, AgreesWithTokenize) {
+    for (const std::string_view text : {"/join #a", R"(/topic #a "new topic")", "", "/msg #a hi there"}) {
+        const auto result = chat::try_tokenize(text);
         ASSERT_TRUE(result.has_value()) << text;
-        EXPECT_EQ(result->index(), chat::parse(line).index()) << text;
+        EXPECT_EQ(*result, chat::tokenize(text)) << text;
     }
 }
 
-TEST(TryParse, ReturnsTheSameReasonParseThrows) {
-    for (const char* const text :
-         {"", "/frob #a", "/join a", "/msg #a", "/msg #a,#a hi", "/history #a 3x",
-          R"(/topic #a "open)", "/nick", "/msg #a \xd0"}) {
-        const InputLine line{text};
-        const auto result = chat::try_parse(line);
+TEST(TryTokenize, ReturnsTheSameReasonTokenizeThrows) {
+    for (const std::string_view text : {R"(/topic #a "open)", R"(")"}) {
+        const auto result = chat::try_tokenize(text);
         ASSERT_FALSE(result.has_value()) << text;
         try {
-            static_cast<void>(chat::parse(line));
-            ADD_FAILURE() << "parse must throw on " << text;
+            static_cast<void>(chat::tokenize(text));
+            ADD_FAILURE() << "tokenize must throw on " << text;
         } catch (const ParseError& e) {
             EXPECT_EQ(result.error().reason(), e.reason()) << text;
         }
@@ -118,7 +118,7 @@ std::expected<int, ParseError> returning_level(int depth) {
 
 }  // namespace
 
-TEST(TryParse, ErrorThroughTenLevels) {
+TEST(Expected, ErrorThroughTenLevels) {
     EXPECT_THROW(throwing_level(10), ParseError);
 
     const auto result = returning_level(10);

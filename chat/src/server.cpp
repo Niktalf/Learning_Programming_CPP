@@ -4,11 +4,11 @@
 #include <new>
 #include <string>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "chat/errors.hpp"
-#include "chat/parser.hpp"
+#include "chat/commands.hpp"
+#include "chat/input_line.hpp"
 
 namespace chat {
 namespace {
@@ -50,25 +50,6 @@ namespace {
 }
 
 
-// Запись журнала: комнаты через запятую, автор и текст через табуляцию.
-// Табуляции в тексте быть не может — разбор отвергает управляющие символы.
-[[nodiscard]] std::string record_of(const std::string& author, const MsgCommand& msg) {
-    std::string record;
-    char separator = '\0';
-    for (const std::string_view room : msg.rooms) {
-        if (separator != '\0') {
-            record += separator;
-        }
-        record += room;
-        separator = ',';
-    }
-    record += '\t';
-    record += author;
-    record += '\t';
-    record += msg.text;
-    return record;
-}
-
 }  // namespace
 
 Session Server::login(std::string nick) {
@@ -83,16 +64,10 @@ void Server::logout(const Session& session) {
 Response Server::handle(Session& session, std::string line) {
     const InputLine input{std::move(line)};
     try {
-        const Command command = parse(input);
-        Response response = execute(store_, session, command);
-        // В журнал — только успешно отправленные сообщения. Если запись не
-        // удалась, сообщение уже в истории, а клиент получит ошибку; журнал
-        // до исполнения (write-ahead) этого не допускает, но требует отката.
-        // Курс вернётся к этому на этапе 17.
-        if (const auto* const msg = std::get_if<MsgCommand>(&command); msg && log_) {
-            log_->append(record_of(session.nick, *msg));
-        }
-        return response;
+        // Журнал пишет сам обработчик /msg: только он знает, что
+        // отправлено. Сервер лишь даёт ему журнал, если тот ведётся.
+        Context call{store_, session, log_ ? &*log_ : nullptr};
+        return commands().bind(input.view())(call);
     } catch (...) {
         // catch (...) допустим только здесь, на самой внешней границе, и
         // только с осмысленным ответом. Ответ строится по исходной причине,

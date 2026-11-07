@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "taskq/errors.hpp"
-#include "taskq/executor.hpp"
+#include "taskq/service.hpp"
 #include "taskq/handler.hpp"
 #include "temp_dir.hpp"
 

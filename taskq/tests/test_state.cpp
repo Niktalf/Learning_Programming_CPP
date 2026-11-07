@@ -1,5 +1,5 @@
-// Автомат состояний задачи проверяется целиком: шестнадцать пар, из них
-// разрешены ровно четыре. Таблица в тесте записана независимо от switch
+// Автомат состояний задачи проверяется целиком: двадцать пять пар, из них
+// разрешены ровно пять (этап 6 добавил Cancelled и PURGE). Таблица в тесте записана независимо от switch
 // в state.hpp — иначе тест проверял бы код сам на себя.
 
 #include <gtest/gtest.h>
@@ -11,11 +11,12 @@
 
 using taskq::State;
 
-TEST(State, ExactlyFourTransitionsAreAllowed) {
-    constexpr std::array<State, 4> states = {State::Pending, State::Leased, State::Done,
-                                             State::Failed};
-    constexpr std::array<std::pair<State, State>, 4> expected = {{
+TEST(State, ExactlyFiveTransitionsAreAllowed) {
+    constexpr std::array<State, 5> states = {State::Pending, State::Leased, State::Done,
+                                             State::Failed, State::Cancelled};
+    constexpr std::array<std::pair<State, State>, 5> expected = {{
         {State::Pending, State::Leased},   // POLL
+        {State::Pending, State::Cancelled},   // PURGE
         {State::Leased, State::Done},      // ACK
         {State::Leased, State::Failed},    // FAIL
         {State::Leased, State::Pending},   // RELEASE — возврат аренды
@@ -40,8 +41,10 @@ TEST(State, LeaseCanBeReturned) {
 }
 
 TEST(State, FinishedStatesAreTerminal) {
-    for (const State to : {State::Pending, State::Leased, State::Done, State::Failed}) {
+    for (const State to :
+         {State::Pending, State::Leased, State::Done, State::Failed, State::Cancelled}) {
         EXPECT_FALSE(taskq::allowed(State::Done, to));
         EXPECT_FALSE(taskq::allowed(State::Failed, to));
+        EXPECT_FALSE(taskq::allowed(State::Cancelled, to));
     }
 }

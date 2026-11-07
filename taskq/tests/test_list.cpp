@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "taskq/executor.hpp"
+#include "taskq/service.hpp"
 #include "taskq/handler.hpp"
 #include "taskq/task.hpp"
 #include "taskq/task_store.hpp"
@@ -82,7 +82,11 @@ TEST(List, CommandWithNamedArguments) {
               std::string("id=1 prio=7 make\nid=2 prio=0 1"));
     EXPECT_EQ(taskq::handle(service, "LIST build type=binary").text, std::string("(empty)"));
     EXPECT_EQ(taskq::handle(service, "LIST build prio>=10").text,
-              std::string("ERR priority must be 0..9: 10"));
+              std::string("ERR priority must be 0..9: 10 (usage: LIST <queue> [prio>=0..9] "
+                          "[type=text|number|binary] [limit=N])"));
+    // С этапа 6 именованные аргументы разбирает реестр: повтор — лишний
+    // аргумент, и подсказка выводится из сигнатуры Service::list.
     EXPECT_EQ(taskq::handle(service, "LIST build limit=1 limit=2").text,
-              std::string("ERR unexpected LIST argument: limit=2"));
+              std::string("ERR unexpected argument: limit=2 (usage: LIST <queue> [prio>=0..9] "
+                          "[type=text|number|binary] [limit=N])"));
 }

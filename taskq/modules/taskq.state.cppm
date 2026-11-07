@@ -18,7 +18,8 @@ export module taskq.state;
 
 export namespace taskq::modules {
 
-enum class State { Pending, Leased, Done, Failed };
+// Этап 6: состояние Cancelled для PURGE — модуль повторяет state.hpp.
+enum class State { Pending, Leased, Done, Failed, Cancelled };
 
 // Единственное место, где решается, какой переход разрешён. Проверки не
 // размазаны по командам: на этапе 11 переход должен стать атомарным, и
@@ -30,11 +31,12 @@ enum class State { Pending, Leased, Done, Failed };
 constexpr bool allowed(State from, State to) noexcept {
     switch (from) {
         case State::Pending:
-            return to == State::Leased;
+            return to == State::Leased || to == State::Cancelled;
         case State::Leased:
             return to == State::Done || to == State::Failed || to == State::Pending;
         case State::Done:
         case State::Failed:
+        case State::Cancelled:
             return false;
     }
     return false;
@@ -50,6 +52,8 @@ constexpr std::string_view name(State state) noexcept {
             return "done";
         case State::Failed:
             return "failed";
+        case State::Cancelled:
+            return "cancelled";
     }
     return "unknown";
 }

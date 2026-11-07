@@ -214,6 +214,33 @@ public:
         it->second.history.push_back(std::move(message));
     }
 
+    // Этап 6, домашнее задание: исключение участника и уведомление об этом
+    // — одна операция. Сильная гарантия: всё, что может бросить, — поиск,
+    // проверки и запас ёмкости истории — до первого изменения. Дальше
+    // erase (сравнение owner_less не бросает) и push_back в запасённую
+    // ёмкость с перемещением, которое не бросает.
+    //
+    // Почему не leave и затем post: бросок post между ними оставил бы
+    // участника исключённым без следа в истории. На этапе 11, когда
+    // хранилище станет общим для потоков, одна операция — это и один захват
+    // мьютекса: между исключением и уведомлением никто не вклинится.
+    void kick(std::string_view room, std::string_view nick, M notice) {
+        static_assert(std::is_nothrow_move_constructible_v<M>,
+                      "kick needs a message type with a noexcept move constructor");
+        const auto it = rooms_.find(room);
+        if (it == rooms_.end()) {
+            throw UnknownRoomError(std::string(room));
+        }
+        Room& target = it->second;
+        const std::shared_ptr<User> user = find_user(nick);
+        if (!user || target.members.count(user) == 0) {
+            throw NotMemberError(std::string(room), std::string(nick));
+        }
+        reserve_one_more(target.history);   // может бросить — ничего не изменено
+        target.members.erase(user);
+        target.history.push_back(std::move(notice));
+    }
+
     // Рассылка в несколько комнат с сильной гарантией: сообщение появляется
     // либо во всех комнатах, либо ни в одной.
     //

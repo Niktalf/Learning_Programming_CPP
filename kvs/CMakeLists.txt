@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.28)
 project(kvs LANGUAGES CXX)
 
+# Этап 6: реестр команд вместо parse и execute — include/kvs/registry.hpp,
+# docs/registry.md.
+#
 # С этапа 5 — C++23. На лекции 5 разбирались концепции, ranges, оператор <=>
 # и корутины; вместе с двадцать третьим стандартом приходят std::expected
 # (он заменяет собственный Result этапа 3), std::print, std::generator и
@@ -31,19 +34,18 @@ FetchContent_Declare(googletest
 FetchContent_MakeAvailable(googletest)
 
 add_library(kvs_core
-        src/ivalue.cpp
-        src/value.cpp
-        src/errors.cpp
-        src/log.cpp
-        src/file.cpp
-        src/request_cache.cpp
-        src/server.cpp
-        src/glob.cpp
-        src/bytes.cpp
-        src/lexer.cpp
-        src/parser.cpp
-        src/executor.cpp
-        src/owning_buffer.cpp)
+    src/ivalue.cpp
+    src/value.cpp
+    src/errors.cpp
+    src/log.cpp
+    src/file.cpp
+    src/request_cache.cpp
+    src/server.cpp
+    src/glob.cpp
+    src/bytes.cpp
+    src/lexer.cpp
+    src/commands.cpp
+    src/owning_buffer.cpp)
 target_include_directories(kvs_core PUBLIC include)
 target_link_libraries(kvs_core PRIVATE kvs_warnings)
 
@@ -52,28 +54,30 @@ target_link_libraries(kvs_cli PRIVATE kvs_core kvs_warnings)
 
 enable_testing()
 add_executable(kvs_tests
-        tests/test_value.cpp
-        tests/test_owning_buffer.cpp
-        tests/test_store.cpp
-        tests/test_insert_order.cpp
-        tests/test_lexer.cpp
-        tests/test_parser.cpp
-        tests/test_executor.cpp
-        tests/test_lifetime.cpp
-        tests/test_errors.cpp
-        tests/test_guarantee.cpp
-        tests/test_server.cpp
-        tests/test_result.cpp
-        tests/test_fuzz.cpp
-        tests/test_hierarchy.cpp
-        tests/test_log.cpp
-        tests/test_file.cpp
-        tests/test_cache.cpp
-        tests/test_cycle.cpp
-        tests/test_concepts.cpp
-        tests/test_keys.cpp
-        tests/test_version.cpp
-        tests/test_generator.cpp)
+    tests/test_value.cpp
+    tests/test_owning_buffer.cpp
+    tests/test_store.cpp
+    tests/test_insert_order.cpp
+    tests/test_lexer.cpp
+    tests/test_commands.cpp
+    tests/test_lifetime.cpp
+    tests/test_errors.cpp
+    tests/test_guarantee.cpp
+    tests/test_server.cpp
+    tests/test_result.cpp
+    tests/test_fuzz.cpp
+    tests/test_hierarchy.cpp
+    tests/test_log.cpp
+    tests/test_file.cpp
+    tests/test_cache.cpp
+    tests/test_cycle.cpp
+    tests/test_concepts.cpp
+    tests/test_keys.cpp
+    tests/test_version.cpp
+    tests/test_generator.cpp
+    tests/test_registry.cpp
+    tests/test_convert.cpp
+    tests/test_static_registry.cpp)
 target_include_directories(kvs_tests PRIVATE tools)
 target_link_libraries(kvs_tests PRIVATE kvs_core kvs_warnings GTest::gtest_main)
 
@@ -92,7 +96,8 @@ add_executable(kvs_alloc_tests tests/test_allocations.cpp tools/alloc_counter.cp
 target_include_directories(kvs_alloc_tests PRIVATE tools)
 target_link_libraries(kvs_alloc_tests PRIVATE kvs_core kvs_warnings GTest::gtest_main)
 
-# Этап 3, второй путь: цена исключений и Result без ошибок и с ошибками.
+# Этап 3, второй путь: цена исключений и std::expected без ошибок и с
+# ошибками. С этапа 6 меряется лексер: разбор команд ушёл в реестр.
 add_executable(kvs_error_cost tools/error_cost.cpp)
 target_include_directories(kvs_error_cost PRIVATE tools)
 target_link_libraries(kvs_error_cost PRIVATE kvs_core kvs_warnings)
@@ -154,6 +159,15 @@ kvs_expect_compile_failure(kvs_sort_classic_fail tests/compile_fail/sort_classic
                            "operator-")
 kvs_expect_compile_failure(kvs_sort_ranges_fail tests/compile_fail/sort_ranges.cpp
                            "random_access")
+
+# Этап 6: обработчик с параметром, который convert не умеет, — концепция
+# CommandHandler отвергает его в строке регистрации.
+kvs_expect_compile_failure(kvs_bad_handler_fail tests/compile_fail/bad_handler.cpp
+                           "ArgumentsSupported")
+
+# Звёздочка этапа 6: повтор имени в StaticRegistry — static_assert.
+kvs_expect_compile_failure(kvs_duplicate_command_fail tests/compile_fail/duplicate_command.cpp
+                           "duplicate command name")
 
 # Домашнее задание этапа 5: модули. Включаются явно, -DKVS_MODULES=ON:
 # поддержка в CMake, Ninja и компиляторах всё ещё неровная, и обычная сборка

@@ -11,7 +11,8 @@
 // Утечки и неопределённое поведение ловит сборка с санитайзерами.
 //
 // Что фаззер нашёл на версии с проверками этапа 2 (каждая находка закрыта
-// тестом в tests/test_validate.cpp или tests/test_executor.cpp):
+// тестом в tests/test_validate.cpp или tests/test_commands.cpp, до этапа 6 —
+// test_executor.cpp):
 //
 //   1. Имя очереди из одних пробелов — CREATE "   " — создавало очередь,
 //      в которую потом невозможно было адресовать задачу без кавычек;
@@ -34,7 +35,7 @@
 #include <string>
 #include <vector>
 
-#include "taskq/executor.hpp"
+#include "taskq/service.hpp"
 #include "taskq/handler.hpp"
 #include "taskq/validate.hpp"
 

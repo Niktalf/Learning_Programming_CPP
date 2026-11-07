@@ -5,7 +5,7 @@
 #include <optional>
 #include <string>
 
-#include "kvs/executor.hpp"
+#include "kvs/commands.hpp"
 #include "kvs/log.hpp"
 #include "kvs/request_cache.hpp"
 #include "kvs/store.hpp"

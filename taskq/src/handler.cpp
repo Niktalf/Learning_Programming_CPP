@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "taskq/errors.hpp"
-#include "taskq/parser.hpp"
+#include "taskq/input_line.hpp"
 
 namespace taskq {
 namespace {
@@ -55,7 +55,7 @@ namespace {
 Response handle(Service& service, std::string line) {
     const InputLine input{std::move(line)};
     try {
-        return service.execute(parse(input));
+        return service.execute(input.view());
     } catch (...) {
         // catch (...) допустим только здесь, на самой внешней границе, и
         // только с осмысленным ответом. Проглотить молча было бы хуже, чем

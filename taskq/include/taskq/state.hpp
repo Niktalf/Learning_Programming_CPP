@@ -12,9 +12,11 @@ namespace taskq {
 //   Pending ─────────▶ Leased ─────────▶ Done
 //      ▲                 │  │
 //      └─────────────────┘  └──────────▶ Failed
-//          RELEASE                FAIL
-//      (возврат аренды)
-enum class State { Pending, Leased, Done, Failed };
+//      │   RELEASE                FAIL
+//      │ (возврат аренды)
+//      └──────────▶ Cancelled
+//          PURGE (этап 6)
+enum class State { Pending, Leased, Done, Failed, Cancelled };
 
 // Единственное место, где решается, какой переход разрешён. Проверки не
 // размазаны по командам: на этапе 11 переход должен стать атомарным, и
@@ -26,11 +28,12 @@ enum class State { Pending, Leased, Done, Failed };
 constexpr bool allowed(State from, State to) noexcept {
     switch (from) {
         case State::Pending:
-            return to == State::Leased;
+            return to == State::Leased || to == State::Cancelled;
         case State::Leased:
             return to == State::Done || to == State::Failed || to == State::Pending;
         case State::Done:
         case State::Failed:
+        case State::Cancelled:
             return false;
     }
     return false;
@@ -46,6 +49,8 @@ constexpr std::string_view name(State state) noexcept {
             return "done";
         case State::Failed:
             return "failed";
+        case State::Cancelled:
+            return "cancelled";
     }
     return "unknown";
 }
@@ -55,5 +60,7 @@ static_assert(allowed(State::Pending, State::Leased), "POLL leases a pending tas
 static_assert(allowed(State::Leased, State::Pending), "RELEASE returns a lease");
 static_assert(!allowed(State::Done, State::Done), "a finished task stays finished");
 static_assert(!allowed(State::Pending, State::Done), "only a leased task can be acknowledged");
+static_assert(allowed(State::Pending, State::Cancelled), "PURGE cancels a pending task");
+static_assert(!allowed(State::Leased, State::Cancelled), "PURGE leaves leased tasks to their workers");
 
 }  // namespace taskq

@@ -3,19 +3,28 @@
 
 #include <gtest/gtest.h>
 
+#include <exception>
 #include <string>
 
-#include "taskq/parser.hpp"
+#include "taskq/errors.hpp"
+#include "taskq/service.hpp"
 #include "taskq/validate.hpp"
 
 namespace {
 
+// С этапа 6 разбирает реестр; ошибку аргумента он оборачивает подсказкой,
+// поэтому причина — по корню цепочки.
 std::string reason_for(const std::string& text) {
-    const taskq::InputLine line{text};
     try {
-        static_cast<void>(taskq::parse(line));
-    } catch (const taskq::ParseError& e) {
-        return e.reason();
+        static_cast<void>(taskq::Service::commands().bind(text));
+    } catch (...) {
+        try {
+            std::rethrow_exception(taskq::root_cause(std::current_exception()));
+        } catch (const taskq::ParseError& e) {
+            return e.reason();
+        } catch (...) {
+            return "not a parse error";
+        }
     }
     return "parsed";
 }
