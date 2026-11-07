@@ -1,11 +1,16 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
+#include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <generator>
 #include <map>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <string>
 #include <string_view>
@@ -13,8 +18,10 @@
 #include <utility>
 #include <vector>
 
+#include "chat/concepts.hpp"
 #include "chat/errors.hpp"
 #include "chat/message.hpp"
+#include "chat/message_id.hpp"
 #include "chat/user.hpp"
 
 namespace chat {
@@ -23,7 +30,17 @@ namespace chat {
 // причине: в тестах вместо MessagePtr подставляется инструментированный тип,
 // считающий копирования и перемещения. Без этого утверждение «добавление
 // временного сообщения не копирует» проверить нечем.
+// Этап 5: что хранилище требует от элемента истории. Рассылка делает копии
+// функцией duplicate — для unique_ptr<IMessage> это clone, для копируемых
+// тестовых типов обычное копирование, — и переносит их в истории
+// перемещением, которое бросать не должно. Концепция объявлена здесь, а не в
+// concepts.hpp: ей нужна видимая перегрузка duplicate из message.hpp.
 template <class M>
+concept HistoryItem = std::is_nothrow_move_constructible_v<M> && requires(const M& message) {
+    { duplicate(message) } -> std::same_as<M>;
+};
+
+template <HistoryItem M>
 class BasicChatStore {
 public:
     using History = std::vector<M>;
@@ -260,9 +277,12 @@ public:
     // Этап 2: вместо сырого указателя — std::optional. Внутри — ссылка через
     // reference_wrapper: std::optional<T&> стандартом не предусмотрен, а
     // копировать историю на каждый запрос недопустимо.
+    //
+    // Этап 5: имя комнаты — любой NameLike: строка, string_view, литерал.
+    template <NameLike N>
     [[nodiscard]] std::optional<std::reference_wrapper<const History>>
-    history(std::string_view room) const {
-        const auto it = rooms_.find(room);
+    history(const N& room) const {
+        const auto it = rooms_.find(name_view(room));
         if (it == rooms_.end()) {
             return std::nullopt;
         }
@@ -305,8 +325,91 @@ public:
         return true;
     }
 
-    [[nodiscard]] bool contains(std::string_view room) const {
-        return rooms_.find(room) != rooms_.end();
+    template <NameLike N>
+    [[nodiscard]] bool contains(const N& room) const {
+        return rooms_.find(name_view(room)) != rooms_.end();
+    }
+
+    // --- Этап 5: история через ranges --------------------------------------
+    //
+    // Последние limit сообщений, удовлетворяющих предикату, в хронологическом
+    // порядке, вместе с номерами в истории. Конвейер:
+    //
+    //     enumerate | reverse | filter | take
+    //
+    // enumerate из C++23 приклеивает к каждому сообщению его номер; reverse
+    // идёт от новых к старым; filter отбирает; take останавливает обход, как
+    // только набралось limit. Ничего не материализуется до take: на комнате
+    // из тысячи сообщений при limit 10 предикат вызывается немногим больше
+    // десяти раз. Тест History.PipelineIsLazy проверяет это счётчиком.
+    //
+    // views::reverse требует двунаправленного диапазона. vector таким
+    // является; на этапе 7 история переедет в кольцевой буфер, и его
+    // итератор придётся сделать двунаправленным, иначе конвейер не соберётся.
+    //
+    // Возвращаются ссылки внутрь истории: пока результат жив, комнату нельзя
+    // менять — тот же урок, что со string_view на этапе 2.
+    struct Entry {
+        std::size_t index;
+        std::reference_wrapper<const M> message;
+    };
+
+    template <NameLike N, std::predicate<const M&> Predicate>
+    [[nodiscard]] std::optional<std::vector<Entry>> history_where(const N& room,
+                                                                  Predicate predicate,
+                                                                  std::size_t limit) const {
+        const auto it = rooms_.find(name_view(room));
+        if (it == rooms_.end()) {
+            return std::nullopt;
+        }
+        // Предел обрезается по размеру истории до того, как попасть в take.
+        // take принимает знаковую разность итераторов, и size_t больше
+        // PTRDIFF_MAX превратился бы в отрицательное число — нарушение
+        // предусловия counted_iterator. Это нашёл фаззер: /history #general
+        // 18446744073709551615 ронял отладочную сборку на проверке
+        // библиотеки, а в обычной сборке был бы неопределённым поведением.
+        const History& history = it->second.history;
+        const auto bounded = static_cast<std::ptrdiff_t>(std::min(limit, history.size()));
+        auto selected = history | std::views::enumerate | std::views::reverse |
+                        std::views::filter([&predicate](const auto& pair) {
+                            return std::invoke(predicate, std::get<1>(pair));
+                        }) |
+                        std::views::take(bounded);
+        // Материализация — обычным циклом, а не std::ranges::to: ranges::to
+        // для прямого диапазона проходит его дважды — сначала чтобы узнать
+        // размер, — и предикат вызывался бы почти вдвое чаще.
+        std::vector<Entry> result;
+        for (const auto& [index, message] : selected) {
+            result.push_back(Entry{static_cast<std::size_t>(index), std::cref(message)});
+        }
+        std::ranges::reverse(result);   // обратно в хронологический порядок
+        return result;
+    }
+
+    // Звёздочка этапа 5: история генератором, от новых к старым. Корутина
+    // отдаёт сообщения по одному и приостанавливается между ними. Если обход
+    // прерван, кадр корутины уничтожается в точке приостановки, и её
+    // локальные объекты разрушаются как положено: RAII работает и внутри
+    // корутины. Плата — кадр корутины в куче.
+    //
+    // Генератор смотрит в историю: обходить его можно, только пока комната
+    // не меняется. Несуществующая комната — пустая последовательность.
+    [[nodiscard]] std::generator<const M&> newest_first(std::string room) const {
+        const auto it = rooms_.find(room);
+        if (it == rooms_.end()) {
+            co_return;
+        }
+        for (const M& message : it->second.history | std::views::reverse) {
+            co_yield message;
+        }
+    }
+
+    // Идентификатор для нового сообщения: следующий номер в общей
+    // последовательности чата и текущее время.
+    [[nodiscard]] MessageId next_message_id(std::string author) {
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch());
+        return MessageId{++seq_, static_cast<std::uint64_t>(now.count()), std::move(author)};
     }
 
     [[nodiscard]] std::size_t room_count() const noexcept { return rooms_.size(); }
@@ -368,6 +471,7 @@ private:
     using Map = std::map<std::string, Room, std::less<>>;
     Map rooms_;
     std::map<std::string, std::shared_ptr<User>, std::less<>> users_;
+    std::uint64_t seq_ = 0;   // последний выданный номер сообщения
 };
 
 using ChatStore = BasicChatStore<MessagePtr>;

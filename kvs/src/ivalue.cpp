@@ -1,7 +1,7 @@
 #include "kvs/ivalue.hpp"
 
+#include <format>
 #include <memory>
-#include <sstream>
 #include <string>
 #include <utility>
 
@@ -23,10 +23,8 @@ bool StringValue::equals(const IValue& other) const noexcept {
 }
 
 std::string IntValue::to_string() const {
-    // std::format появится с C++23 на этапе 5, пока форматируем потоком.
-    std::ostringstream out;
-    out << data_;
-    return out.str();
+    // Этап 5: стандарт C++23, std::format вместо строкового потока.
+    return std::format("{}", data_);
 }
 
 std::unique_ptr<IValue> IntValue::clone() const {

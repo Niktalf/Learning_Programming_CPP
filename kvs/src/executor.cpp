@@ -4,7 +4,8 @@
 #include <exception>
 #include <limits>
 #include <memory>
-#include <sstream>
+#include <ranges>
+#include <format>
 #include <string>
 #include <utility>
 #include <variant>
@@ -17,9 +18,7 @@ namespace kvs {
 namespace {
 
 std::string to_text(std::int64_t value) {
-    std::ostringstream out;
-    out << value;
-    return out.str();
+    return std::format("{}", value);
 }
 
 // Сложение с проверкой переполнения. Нашёл необходимость фаззер из домашнего
@@ -46,6 +45,8 @@ std::string describe(const Command& command) {
             [](const IncrCommand& c) { return "INCR " + std::string(c.key); },
             [](const RpushCommand& c) { return "RPUSH " + std::string(c.key); },
             [](const LlenCommand& c) { return "LLEN " + std::string(c.key); },
+            [](const KeysCommand& c) { return "KEYS " + std::string(c.pattern); },
+            [](const VersionCommand& c) { return "VERSION " + std::string(c.key); },
             [](const MsetCommand& c) {
                 std::string text = "MSET";
                 for (const auto& [key, value] : c.pairs) {
@@ -134,6 +135,24 @@ Response run_command(Store& store, const Command& command) {
                 }
                 return Response{true, std::to_string(items->length())};
             },
+            [&](const KeysCommand& c) {
+                const std::vector<std::string> keys = store.keys(c.pattern, c.limit);
+                if (keys.empty()) {
+                    return Response{true, "(empty)"};
+                }
+                // join через views::join_with из C++23 — без ручной склейки
+                // и без лишнего перевода строки в конце.
+                return Response{true, std::ranges::to<std::string>(keys | std::views::join_with('\n'))};
+            },
+            [&](const VersionCommand& c) {
+                const auto version = store.version(c.key);
+                if (!version) {
+                    throw KeyNotFoundError(std::string(c.key));
+                }
+                return Response{true, std::format("generation={} timestamp={} author={}",
+                                                  version->generation, version->timestamp,
+                                                  version->author)};
+            },
             [&](const MsetCommand& c) {
                 std::vector<std::pair<std::string, Value>> pairs;
                 pairs.reserve(c.pairs.size());
@@ -181,6 +200,8 @@ bool modifies(const Command& command) noexcept {
             [](const MsetCommand&) { return true; },
             [](const RpushCommand&) { return true; },
             [](const LlenCommand&) { return false; },
+            [](const KeysCommand&) { return false; },
+            [](const VersionCommand&) { return false; },
         },
         command);
 }

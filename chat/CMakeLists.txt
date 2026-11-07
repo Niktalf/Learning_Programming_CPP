@@ -1,18 +1,22 @@
 cmake_minimum_required(VERSION 3.28)
 project(chat LANGUAGES CXX)
 
-# Этапы 2–4 идут под C++17. На этапе 3 разбираются исключения, на этапе 4 —
-# RAII и умные указатели; всё это целиком укладывается в семнадцатый стандарт.
-# std::expected появился только в C++23, поэтому второй путь обработки ошибок
-# этапа 3 построен на собственном Result.
+# С этапа 5 — C++23. На лекции 5 разбирались концепции, ranges, оператор <=>
+# и корутины; вместе с двадцать третьим стандартом приходят std::expected
+# (он заменяет собственный Result этапа 3), std::print, std::generator,
+# views::enumerate и ranges::to.
 #
-# Стандарт поднимается вместе с курсом: этап 1 был под 14, этапы 3–4 остаются
-# на 17, с этапа 5 — C++23. Так компилятор сам не даёт применить то, чего ещё
-# не было на лекциях.
-set(CMAKE_CXX_STANDARD 17)
+# Лестница стандартов: этап 1 — C++14, этапы 2–4 — C++17, с этапа 5 — C++23.
+# Так компилятор сам не даёт применить то, чего ещё не было на лекциях.
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# CMake с C++20 и новее по умолчанию сканирует каждый исходник в поисках
+# модулей. Модули в проекте — только эксперимент домашнего задания этапа 5,
+# поэтому сканирование выключено везде и включается лишь для его целей.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 # Общие для своих целей предупреждения. Намеренно не через CMAKE_CXX_FLAGS:
 # иначе они распространятся и на исходники GoogleTest, загруженные через
@@ -27,15 +31,16 @@ FetchContent_Declare(googletest
 FetchContent_MakeAvailable(googletest)
 
 add_library(chat_core
-        src/message.cpp
-        src/lexer.cpp
-        src/parser.cpp
-        src/executor.cpp
-        src/errors.cpp
-        src/server.cpp
-        src/log.cpp
-        src/validate.cpp
-        src/owning_buffer.cpp)
+    src/message.cpp
+    src/lexer.cpp
+    src/parser.cpp
+    src/executor.cpp
+    src/errors.cpp
+    src/server.cpp
+    src/log.cpp
+    src/validate.cpp
+    src/message_id.cpp
+    src/owning_buffer.cpp)
 target_include_directories(chat_core PUBLIC include)
 target_link_libraries(chat_core PRIVATE chat_warnings)
 
@@ -44,23 +49,27 @@ target_link_libraries(chat_cli PRIVATE chat_core chat_warnings)
 
 enable_testing()
 add_executable(chat_tests
-        tests/test_message.cpp
-        tests/test_owning_buffer.cpp
-        tests/test_chat_store.cpp
-        tests/test_lexer.cpp
-        tests/test_parser.cpp
-        tests/test_executor.cpp
-        tests/test_lifetime.cpp
-        tests/test_push_order.cpp
-        tests/test_errors.cpp
-        tests/test_validate.cpp
-        tests/test_guarantee.cpp
-        tests/test_server.cpp
-        tests/test_result.cpp
-        tests/test_fuzz.cpp
-        tests/test_members.cpp
-        tests/test_log.cpp
-        tests/test_cycle.cpp)
+    tests/test_message.cpp
+    tests/test_owning_buffer.cpp
+    tests/test_chat_store.cpp
+    tests/test_lexer.cpp
+    tests/test_parser.cpp
+    tests/test_executor.cpp
+    tests/test_lifetime.cpp
+    tests/test_push_order.cpp
+    tests/test_errors.cpp
+    tests/test_validate.cpp
+    tests/test_guarantee.cpp
+    tests/test_server.cpp
+    tests/test_result.cpp
+    tests/test_fuzz.cpp
+    tests/test_members.cpp
+    tests/test_log.cpp
+    tests/test_cycle.cpp
+    tests/test_concepts.cpp
+    tests/test_history.cpp
+    tests/test_message_id.cpp
+    tests/test_generator.cpp)
 target_include_directories(chat_tests PRIVATE tests tools)
 target_link_libraries(chat_tests PRIVATE chat_core chat_warnings GTest::gtest_main)
 
@@ -105,3 +114,44 @@ add_executable(chat_cycle_leak EXCLUDE_FROM_ALL tools/cycle_demo.cpp)
 target_include_directories(chat_cycle_leak PRIVATE tools)
 target_compile_definitions(chat_cycle_leak PRIVATE CHAT_LEAKING_CYCLE)
 target_link_libraries(chat_cycle_leak PRIVATE chat_warnings)
+
+# --- Этап 5: программы, которые не должны собираться -----------------------
+#
+# Каждая — отдельная цель вне обычной сборки и тест, который пытается её
+# собрать и проверяет, что сборка упала, причём по ожидаемой причине: вывод
+# компилятора сверяется с образцом. Так «не компилируется» становится
+# проверяемым утверждением, а не словами в README.
+function(chat_expect_compile_failure name source expect)
+    add_executable(${name} EXCLUDE_FROM_ALL ${source})
+    target_link_libraries(${name} PRIVATE chat_core chat_warnings)
+    add_test(NAME ${name}
+             COMMAND ${CMAKE_COMMAND} -DBUILD_DIR=${CMAKE_BINARY_DIR} -DTARGET=${name}
+                     "-DEXPECT=${expect}"
+                     -P ${CMAKE_SOURCE_DIR}/cmake/expect_compile_failure.cmake)
+endfunction()
+
+# Конвейер над временным контейнером: ranges::find возвращает
+# std::ranges::dangling вместо итератора.
+chat_expect_compile_failure(chat_dangling_range_fail tests/compile_fail/dangling_range.cpp
+                            "dangling")
+
+# Одна и та же ошибка — имя комнаты числом — с концепцией и с enable_if.
+# Сравнение диагностики — в docs/concepts.md.
+chat_expect_compile_failure(chat_concept_diagnostics_fail tests/compile_fail/concept_name.cpp
+                            "NameLike")
+chat_expect_compile_failure(chat_enable_if_diagnostics_fail tests/compile_fail/enable_if_name.cpp
+                            "enable_if")
+
+# Домашнее задание этапа 5: модули. Включаются явно, -DCHAT_MODULES=ON:
+# поддержка в CMake, Ninja и компиляторах всё ещё неровная, и обычная сборка
+# от неё зависеть не должна. Что получилось и что нет — docs/modules.md.
+option(CHAT_MODULES "Build the C++ modules experiment (stage 5 homework)" OFF)
+if(CHAT_MODULES)
+    add_library(chat_utf8_module)
+    set_target_properties(chat_utf8_module PROPERTIES CXX_SCAN_FOR_MODULES ON)
+    target_sources(chat_utf8_module PUBLIC FILE_SET CXX_MODULES FILES modules/chat.utf8.cppm)
+    target_link_libraries(chat_utf8_module PRIVATE chat_warnings)
+    add_executable(chat_modules_demo modules/demo.cpp)
+    set_target_properties(chat_modules_demo PROPERTIES CXX_SCAN_FOR_MODULES ON)
+    target_link_libraries(chat_modules_demo PRIVATE chat_utf8_module chat_warnings)
+endif()

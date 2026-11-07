@@ -18,7 +18,9 @@ namespace chat {
 struct JoinCommand    { std::string_view room; };
 struct LeaveCommand   { std::string_view room; };
 struct WhoCommand     { std::string_view room; };
-struct HistoryCommand { std::string_view room; std::size_t limit; };
+// Этап 5: необязательный автор — /history #general 10 alice — последние
+// сообщения одного участника, через ленивый конвейер ranges.
+struct HistoryCommand { std::string_view room; std::size_t limit; std::optional<std::string_view> author; };
 struct TypeCommand    { std::string_view room; std::size_t index; };
 struct ReactCommand   { std::string_view room; std::size_t index; std::int64_t by; };
 

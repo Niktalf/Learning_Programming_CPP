@@ -1,5 +1,7 @@
 #include <exception>
+#include <cstdio>
 #include <iostream>
+#include <print>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -10,27 +12,33 @@
 
 namespace {
 
+// Этап 5: стандарт C++23, вывод через std::print. Текст справки — одна
+// сырая строка: так её видно целиком, как она будет напечатана.
 void print_help() {
-    std::cout << "Commands:\n"
-              << "  CREATE <queue>                   create a queue\n"
-              << "  SUBMIT <queue> [prio=N] <body>   enqueue a task, priority 0..9;\n"
-              << "                                   quote queue names with spaces;\n"
-              << "                                   body num:42 is a number, bin:cafe bytes\n"
-              << "  SUBMITBATCH <queue> [prio=N] <body> ...\n"
-              << "                                   enqueue several, all or nothing;\n"
-              << "                                   quote bodies with spaces\n"
-              << "  POLL <queue> [worker]            lease the next task, optionally to a worker\n"
-              << "  ACK <id>                         mark a leased task done\n"
-              << "  FAIL <id>                        mark a leased task failed\n"
-              << "  RELEASE <id>                     return a leased task to its queue\n"
-              << "  STATUS <id>                      state of the task\n"
-              << "  TYPE <id>                        kind of the payload\n"
-              << "  BUMP <id> [n]                    add to a numeric payload\n"
-              << "  WORKER <name>                    register a worker\n"
-              << "  GONE <name>                      the worker disappeared\n"
-              << "  REAP                             requeue tasks of vanished workers\n"
-              << "  DEMO                             capture by reference vs by value\n"
-              << "  HELP / QUIT\n";
+    std::print(R"(Commands:
+  CREATE <queue>                   create a queue
+  SUBMIT <queue> [prio=N] <body>   enqueue a task, priority 0..9;
+                                   quote queue names with spaces;
+                                   body num:42 is a number, bin:cafe bytes
+  SUBMITBATCH <queue> [prio=N] <body> ...
+                                   enqueue several, all or nothing;
+                                   quote bodies with spaces
+  POLL <queue> [worker]            lease the next task: highest priority first,
+                                   then the oldest; optionally to a worker
+  LIST <queue> [prio>=N] [type=K] [limit=N]
+                                   tasks waiting in a queue
+  ACK <id>                         mark a leased task done
+  FAIL <id>                        mark a leased task failed
+  RELEASE <id>                     return a leased task to its queue
+  STATUS <id>                      state of the task
+  TYPE <id>                        kind of the payload
+  BUMP <id> [n]                    add to a numeric payload
+  WORKER <name>                    register a worker
+  GONE <name>                      the worker disappeared
+  REAP                             requeue tasks of vanished workers
+  DEMO                             capture by reference vs by value
+  HELP / QUIT
+)");
 }
 
 // Демонстрация этапа 1: один и тот же обход с двумя лямбдами.
@@ -45,9 +53,8 @@ void run_capture_demo(const taskq::TaskStore& store) {
         by_value += static_cast<int>(tasks.size());
     });
 
-    std::cout << "captured by reference: " << by_reference << '\n'
-              << "captured by value:     " << by_value
-              << "   (the lambda changed its own copy)\n";
+    std::println("captured by reference: {}", by_reference);
+    std::println("captured by value:     {}   (the lambda changed its own copy)", by_value);
 }
 
 }  // namespace
@@ -59,7 +66,7 @@ int main(int argc, char* argv[]) {
         const std::string_view argument = argv[i];
         if (argument.substr(0, log_prefix.size()) != log_prefix ||
             argument.size() == log_prefix.size()) {
-            std::cerr << "usage: taskq_cli [--log=PATH]\n";
+            std::println(stderr, "usage: taskq_cli [--log=PATH]");
             return 2;
         }
         log_path = std::string(argument.substr(log_prefix.size()));
@@ -76,11 +83,11 @@ int main(int argc, char* argv[]) {
             service.emplace();
         }
     } catch (const std::exception& e) {
-        std::cerr << "cannot start: " << e.what() << '\n';
+        std::println(stderr, "cannot start: {}", e.what());
         return 1;
     }
 
-    std::cout << "TASKQ, stage 4\n";
+    std::println("TASKQ, stage 5");
     print_help();
 
     std::string raw;   // объявлена до цикла: в неё читает std::getline
@@ -102,7 +109,7 @@ int main(int argc, char* argv[]) {
         }
         // Вся обработка ошибок команд — внутри handle. Здесь нет ни одного
         // try: консольный клиент просто печатает ответ, каким бы он ни был.
-        std::cout << taskq::handle(*service, std::move(raw)).text << '\n';
+        std::println("{}", taskq::handle(*service, std::move(raw)).text);
     }
     return 0;
 }

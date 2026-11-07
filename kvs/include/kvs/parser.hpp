@@ -6,7 +6,7 @@
 
 #include "kvs/command.hpp"
 #include "kvs/errors.hpp"
-#include "kvs/result.hpp"
+#include <expected>
 
 namespace kvs {
 
@@ -35,10 +35,10 @@ private:
 
 // Второй путь: та же причина отказа, но возвращённая значением. Обе версии
 // оставлены в коде; сравнение — в docs/errors.md.
-[[nodiscard]] Result<Command, ParseError> try_parse(const InputLine& line);
+[[nodiscard]] std::expected<Command, ParseError> try_parse(const InputLine& line);
 
 // Перегрузки для временного объекта удалены: результат пережил бы аргумент.
 Command parse(InputLine&&) = delete;
-Result<Command, ParseError> try_parse(InputLine&&) = delete;
+std::expected<Command, ParseError> try_parse(InputLine&&) = delete;
 
 }  // namespace kvs

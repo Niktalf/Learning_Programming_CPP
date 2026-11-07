@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "taskq/payload.hpp"
+#include "taskq/task_key.hpp"
 
 namespace taskq {
 
@@ -43,6 +44,7 @@ public:
         : id_(other.id_),
           payload_(other.payload_ ? other.payload_->clone() : nullptr),
           priority_(other.priority_),
+          sequence_(other.sequence_),
           at_(other.at_) {}
 
     // copy-and-swap: копия снимается до того, как затрагивается *this, и
@@ -62,12 +64,20 @@ public:
         swap(a.id_, b.id_);
         a.payload_.swap(b.payload_);
         swap(a.priority_, b.priority_);
+        swap(a.sequence_, b.sequence_);
         swap(a.at_, b.at_);
     }
 
     [[nodiscard]] TaskId id() const noexcept { return id_; }
     [[nodiscard]] int priority() const noexcept { return priority_; }
     [[nodiscard]] Timestamp created_at() const noexcept { return at_; }
+
+    // Этап 5: ключ выборки. Номер в очереди выдаёт хранилище при постановке —
+    // в том числе повторной, после возврата аренды: вернувшаяся задача встаёт
+    // в конец среди задач своего приоритета.
+    [[nodiscard]] TaskKey key() const { return TaskKey{priority_, sequence_, std::string()}; }
+    [[nodiscard]] std::uint64_t sequence() const noexcept { return sequence_; }
+    void set_sequence(std::uint64_t sequence) noexcept { sequence_ = sequence; }
 
     // Задача без тела — пустая или перемещённая — отвечает «none», 0 и
     // пустой строкой: методы без предусловий обязаны работать и на ней.
@@ -100,6 +110,7 @@ private:
     TaskId id_ = 0;
     PayloadPtr payload_;
     int priority_ = 0;
+    std::uint64_t sequence_ = 0;
     Timestamp at_ = Timestamp{};
 };
 

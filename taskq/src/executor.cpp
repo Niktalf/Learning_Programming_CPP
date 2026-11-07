@@ -3,10 +3,11 @@
 #include <charconv>
 #include <cstdint>
 #include <exception>
+#include <format>
 #include <limits>
 #include <memory>
 #include <optional>
-#include <sstream>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -113,6 +114,7 @@ constexpr std::string_view binary_prefix = "bin:";
             [](const WorkerCommand& c) { return "WORKER " + std::string(c.name); },
             [](const GoneCommand& c) { return "GONE " + std::string(c.name); },
             [](const ReapCommand&) { return std::string("REAP"); },
+            [](const ListCommand& c) { return "LIST " + std::string(c.queue); },
         },
         command);
 }
@@ -210,9 +212,7 @@ Response Service::poll(const PollCommand& command) {
     transition_to(*id, State::Leased);
     record(*id, name(State::Pending), State::Leased);
 
-    std::ostringstream out;
-    out << "id=" << *id << ' ' << slot->second.task.to_string();
-    return Response{true, out.str()};
+    return Response{true, std::format("id={} {}", *id, slot->second.task.to_string())};
 }
 
 void Service::return_lease(TaskId id) {
@@ -348,6 +348,23 @@ Response Service::run(const Command& command) {
                 return Response{true, "OK"};
             },
             [&](const ReapCommand&) { return reap(); },
+            [&](const ListCommand& c) {
+                const auto tasks = store_.tasks_where(
+                    c.queue, c.min_priority,
+                    [&c](const Task& task) { return !c.kind || task.type_name() == *c.kind; },
+                    c.limit);
+                if (tasks.empty()) {
+                    return Response{true, "(empty)"};
+                }
+                // transform превращает задачи в строки прямо в конвейере,
+                // join_with склеивает их без ручного счёта разделителей.
+                auto lines = tasks | std::views::transform([](const Task& task) {
+                                 return std::format("id={} prio={} {}", task.id(), task.priority(),
+                                                    task.to_string());
+                             }) |
+                             std::views::join_with('\n');
+                return Response{true, std::ranges::to<std::string>(lines)};
+            },
         },
         command);
 }

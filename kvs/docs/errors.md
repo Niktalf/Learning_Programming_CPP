@@ -73,7 +73,8 @@ swap(*this, next);                // noexcept — точка невозврат�
 На этапе 3 разбор строки написан двумя способами:
 
 - `parse(line)` бросает `ParseError`;
-- `try_parse(line)` возвращает `Result<Command, ParseError>`.
+- `try_parse(line)` возвращает `Result<Command, ParseError>` (с этапа 5 —
+  `std::expected<Command, ParseError>`, см. ниже).
 
 `Result` — минимальная собственная версия `std::expected` поверх
 `std::variant`: проект на этом этапе собирается под C++17, а `std::expected`
@@ -153,3 +154,22 @@ ERR no such key: absent (while executing GET absent)
 и `OverflowError`. Дефект закрыт тестами
 `Executor.IncrOverflowIsAnErrorNotUndefinedBehaviour` и
 `Handler.OverflowBecomesResponse`. Остальные виды входа дефектов не выявили.
+
+## Этап 5: Result заменён на std::expected
+
+С переходом на C++23 собственный `Result` удалён, его место занял
+`std::expected`. Интерфейс тот же — `has_value`, `operator*`, `error`, неявное
+построение из значения и из `std::unexpected`, — и вызывающий код поменялся
+почти механически.
+
+Отличие одно, и оно существенно: `value()` у `std::expected` бросает не саму
+ошибку, а `std::bad_expected_access<E>`, внутри которой ошибка лежит. Лексер
+больше не сводится к `try_tokenize(line).value()`: такая граница получила бы
+`bad_expected_access` вместо `ParseError` и ответила бы «internal error».
+Поэтому `tokenize` проверяет результат и бросает `error()` явно. Тест
+`Expected.ValueThrowsBadExpectedAccess` фиксирует это поведение.
+
+Заодно появились `and_then`, `transform` и `or_else` — цепочки шагов, каждый
+из которых может не удаться, без ручной проверки после каждого
+(`Expected.MonadicChaining`). Это ответ стандарта на главный недостаток второго
+пути из сравнения выше — ручной проброс ошибки через уровни.

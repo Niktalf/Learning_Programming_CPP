@@ -5,7 +5,7 @@
 
 namespace kvs {
 
-Result<Tokens, ParseError> try_tokenize(std::string_view line) {
+std::expected<Tokens, ParseError> try_tokenize(std::string_view line) {
     Tokens tokens;
     std::size_t i = 0;
 
@@ -20,7 +20,7 @@ Result<Tokens, ParseError> try_tokenize(std::string_view line) {
         if (line[i] == '"') {
             const auto end = line.find('"', ++i);
             if (end == std::string_view::npos) {
-                return Unexpected{ParseError("unterminated quote", std::string(line))};
+                return std::unexpected(ParseError("unterminated quote", std::string(line)));
             }
             tokens.push_back(line.substr(i, end - i));
             i = end + 1;
@@ -35,8 +35,15 @@ Result<Tokens, ParseError> try_tokenize(std::string_view line) {
 }
 
 Tokens tokenize(std::string_view line) {
-    // value() бросает хранимую ошибку — ParseError — как есть.
-    return try_tokenize(line).value();
+    // Этап 5: вместо собственного Result — std::expected. Одно отличие
+    // существенно: value() у std::expected бросает не саму ошибку, а
+    // std::bad_expected_access<ParseError>. Поэтому ошибка бросается явно,
+    // чтобы граница по-прежнему получала ParseError с причиной.
+    auto tokens = try_tokenize(line);
+    if (!tokens) {
+        throw std::move(tokens).error();
+    }
+    return *std::move(tokens);
 }
 
 }  // namespace kvs

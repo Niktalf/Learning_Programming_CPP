@@ -4,7 +4,7 @@
 
 namespace taskq {
 
-Result<Tokens, ParseError> try_tokenize(std::string_view line, std::size_t max_tokens) {
+std::expected<Tokens, ParseError> try_tokenize(std::string_view line, std::size_t max_tokens) {
     Tokens tokens;
     std::size_t i = 0;
 
@@ -19,7 +19,7 @@ Result<Tokens, ParseError> try_tokenize(std::string_view line, std::size_t max_t
         if (line[i] == '"') {
             const auto end = line.find('"', ++i);
             if (end == std::string_view::npos) {
-                return Unexpected{ParseError("unterminated quote", std::string(line))};
+                return std::unexpected(ParseError("unterminated quote", std::string(line)));
             }
             tokens.push_back(line.substr(i, end - i));
             i = end + 1;
@@ -42,8 +42,14 @@ Result<Tokens, ParseError> try_tokenize(std::string_view line, std::size_t max_t
 }
 
 Tokens tokenize(std::string_view line, std::size_t max_tokens) {
-    // value() бросает хранимую ошибку — ParseError — как есть.
-    return try_tokenize(line, max_tokens).value();
+    // Этап 5: вместо собственного Result — std::expected. value() у него
+    // бросает не саму ошибку, а std::bad_expected_access<ParseError>, поэтому
+    // ошибка бросается явно: граница по-прежнему получает ParseError.
+    auto tokens = try_tokenize(line, max_tokens);
+    if (!tokens) {
+        throw std::move(tokens).error();
+    }
+    return *std::move(tokens);
 }
 
 }  // namespace taskq

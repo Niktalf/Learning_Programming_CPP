@@ -65,8 +65,8 @@ template <class T>
 }
 
 // Список комнат /msg: «#a,#b,#c». Ошибка — причина отказа строкой; это тот
-// же Result, что и у разбора, только с ошибкой попроще.
-[[nodiscard]] Result<Rooms, std::string> split_rooms(std::string_view list) {
+// же std::expected, что и у разбора, только с ошибкой попроще.
+[[nodiscard]] std::expected<Rooms, std::string> split_rooms(std::string_view list) {
     Rooms rooms;
     std::size_t from = 0;
     while (true) {
@@ -75,11 +75,11 @@ template <class T>
             list.substr(from, comma == std::string_view::npos ? std::string_view::npos
                                                               : comma - from);
         if (const auto problem = room_name_problem(room); problem) {
-            return Unexpected{*problem};
+            return std::unexpected(*problem);
         }
         // Одна комната дважды — ошибка ввода, а не повод отправить дважды.
         if (std::find(rooms.begin(), rooms.end(), room) != rooms.end()) {
-            return Unexpected{"room listed twice: " + std::string(room)};
+            return std::unexpected("room listed twice: " + std::string(room));
         }
         rooms.push_back(room);
         if (comma == std::string_view::npos) {
@@ -97,9 +97,9 @@ constexpr std::size_t default_history_limit = 10;
     throw ParseError(std::move(reason), std::string(line));
 }
 
-// Путь на Result: та же ошибка, но возвращается значением.
-[[nodiscard]] Unexpected<ParseError> failure(std::string reason, std::string_view line) {
-    return Unexpected{ParseError(std::move(reason), std::string(line))};
+// Путь на std::expected: та же ошибка, но возвращается значением.
+[[nodiscard]] std::unexpected<ParseError> failure(std::string reason, std::string_view line) {
+    return std::unexpected(ParseError(std::move(reason), std::string(line)));
 }
 
 }  // namespace
@@ -182,17 +182,23 @@ Command parse(const InputLine& input) {
         return WhoCommand{room};
     }
     if (is(verb, "/history")) {
-        if (argc > 2) {
-            fail(arity(verb, "a room and an optional limit"), line);
+        if (argc > 3) {
+            fail(arity(verb, "a room, an optional limit and an optional author"), line);
         }
         if (argc == 1) {
-            return HistoryCommand{room, default_history_limit};
+            return HistoryCommand{room, default_history_limit, std::nullopt};
         }
         const auto limit = to_number<std::size_t>(tokens[2]);
         if (!limit) {
             fail("limit must be a non-negative number: " + std::string(tokens[2]), line);
         }
-        return HistoryCommand{room, *limit};
+        if (argc == 2) {
+            return HistoryCommand{room, *limit, std::nullopt};
+        }
+        if (const auto problem = nick_problem(tokens[3]); problem) {
+            fail(*problem, line);
+        }
+        return HistoryCommand{room, *limit, tokens[3]};
     }
     if (is(verb, "/type")) {
         if (argc != 2) {
@@ -240,7 +246,7 @@ Command parse(const InputLine& input) {
 // Тот же разбор, но ошибка возвращается. Каждый шаг, который может не
 // удаться, проверяется на месте, и ошибка передаётся наверх вручную — в том
 // числе ошибка лексера. Сравнение двух путей — в docs/errors.md.
-Result<Command, ParseError> try_parse(const InputLine& input) {
+std::expected<Command, ParseError> try_parse(const InputLine& input) {
     const std::string_view line = input.view();
     if (const auto problem = line_problem(line); problem) {
         return failure(*problem, line);
@@ -248,7 +254,7 @@ Result<Command, ParseError> try_parse(const InputLine& input) {
 
     const auto head = try_tokenize(line, 2);
     if (!head) {
-        return Unexpected{head.error()};
+        return std::unexpected(head.error());
     }
     if (head->empty()) {
         return failure("empty command", line);
@@ -258,7 +264,7 @@ Result<Command, ParseError> try_parse(const InputLine& input) {
     if (is(verb, "/msg")) {
         const auto tokens = try_tokenize(line, 3);
         if (!tokens) {
-            return Unexpected{tokens.error()};
+            return std::unexpected(tokens.error());
         }
         if (tokens->size() < 2) {
             return failure(arity(verb, "rooms and text"), line);
@@ -278,7 +284,7 @@ Result<Command, ParseError> try_parse(const InputLine& input) {
 
     const auto all = try_tokenize(line);
     if (!all) {
-        return Unexpected{all.error()};
+        return std::unexpected(all.error());
     }
     const Tokens& tokens = *all;
     const std::size_t argc = tokens.size() - 1;
@@ -320,18 +326,24 @@ Result<Command, ParseError> try_parse(const InputLine& input) {
         return Command{WhoCommand{room}};
     }
     if (is(verb, "/history")) {
-        if (argc > 2) {
-            return failure(arity(verb, "a room and an optional limit"), line);
+        if (argc > 3) {
+            return failure(arity(verb, "a room, an optional limit and an optional author"), line);
         }
         if (argc == 1) {
-            return Command{HistoryCommand{room, default_history_limit}};
+            return Command{HistoryCommand{room, default_history_limit, std::nullopt}};
         }
         const auto limit = to_number<std::size_t>(tokens[2]);
         if (!limit) {
             return failure("limit must be a non-negative number: " + std::string(tokens[2]),
                            line);
         }
-        return Command{HistoryCommand{room, *limit}};
+        if (argc == 2) {
+            return Command{HistoryCommand{room, *limit, std::nullopt}};
+        }
+        if (const auto problem = nick_problem(tokens[3]); problem) {
+            return failure(*problem, line);
+        }
+        return Command{HistoryCommand{room, *limit, tokens[3]}};
     }
     if (is(verb, "/type")) {
         if (argc != 2) {

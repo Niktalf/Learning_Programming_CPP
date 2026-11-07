@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "chat/errors.hpp"
-#include "chat/result.hpp"
+#include <expected>
 
 namespace chat {
 
@@ -20,10 +20,12 @@ using Tokens = std::vector<std::string_view>;
 // Токены — представления на исходную строку, ни одного std::string внутри.
 //
 // Этап 3: основная функция — try_tokenize, возвращающая ошибку значением
-// (единственная ошибка лексера — незакрытая кавычка). tokenize — это
-// try_tokenize(...).value(): при ошибке бросается сам ParseError. Так оба пути
-// обработки ошибок, исключения и Result, построены на одном коде.
-[[nodiscard]] Result<Tokens, ParseError> try_tokenize(
+// (единственная ошибка лексера — незакрытая кавычка). tokenize проверяет её
+// результат и бросает ParseError. Так оба пути обработки ошибок, исключения
+// и std::expected, построены на одном коде. С этапа 5 вместо собственного
+// Result — std::expected; его value() бросил бы bad_expected_access, поэтому
+// tokenize бросает ошибку явно.
+[[nodiscard]] std::expected<Tokens, ParseError> try_tokenize(
     std::string_view line, std::size_t max_tokens = (std::numeric_limits<std::size_t>::max)());
 
 [[nodiscard]] Tokens tokenize(std::string_view line,
@@ -32,6 +34,6 @@ using Tokens = std::vector<std::string_view>;
 // Перегрузка для временной строки удалена: результат смотрел бы на строку,
 // разрушенную в конце полного выражения.
 Tokens tokenize(std::string&&, std::size_t = 0) = delete;
-Result<Tokens, ParseError> try_tokenize(std::string&&, std::size_t = 0) = delete;
+std::expected<Tokens, ParseError> try_tokenize(std::string&&, std::size_t = 0) = delete;
 
 }  // namespace chat

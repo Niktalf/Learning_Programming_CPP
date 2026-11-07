@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string_view>
@@ -42,9 +43,15 @@ struct WorkerCommand  { std::string_view name; };
 struct GoneCommand    { std::string_view name; };
 struct ReapCommand    {};
 
+// Этап 5: LIST build prio>=5 type=number limit=10 — задачи очереди через
+// ленивый конвейер ranges. Все аргументы именованные и необязательные.
+struct ListCommand    { std::string_view queue; int min_priority; std::optional<std::string_view> kind; std::size_t limit; };
+
+inline constexpr std::size_t default_list_limit = 20;
+
 using Command = std::variant<CreateCommand, SubmitCommand, BatchCommand, PollCommand,
                              AckCommand, FailCommand, ReleaseCommand, StatusCommand,
                              TypeCommand, BumpCommand, WorkerCommand, GoneCommand,
-                             ReapCommand>;
+                             ReapCommand, ListCommand>;
 
 }  // namespace taskq

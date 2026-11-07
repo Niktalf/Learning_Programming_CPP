@@ -1,18 +1,22 @@
 cmake_minimum_required(VERSION 3.28)
 project(kvs LANGUAGES CXX)
 
-# Этапы 2–4 идут под C++17. На этапе 3 разбираются исключения, на этапе 4 —
-# RAII и умные указатели; всё это целиком укладывается в семнадцатый стандарт.
-# Единственное, чего здесь не хватает, — make_unique_for_overwrite из C++20,
-# см. комментарий в src/owning_buffer.cpp.
+# С этапа 5 — C++23. На лекции 5 разбирались концепции, ranges, оператор <=>
+# и корутины; вместе с двадцать третьим стандартом приходят std::expected
+# (он заменяет собственный Result этапа 3), std::print, std::generator и
+# ranges::to.
 #
-# Стандарт поднимается вместе с курсом: этап 1 был под 14, этапы 3–4 остаются
-# на 17, с этапа 5 — C++23. Так компилятор сам не даёт применить то, чего ещё
-# не было на лекциях.
-set(CMAKE_CXX_STANDARD 17)
+# Лестница стандартов: этап 1 — C++14, этапы 2–4 — C++17, с этапа 5 — C++23.
+# Так компилятор сам не даёт применить то, чего ещё не было на лекциях.
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# CMake с C++20 и новее по умолчанию сканирует каждый исходник в поисках
+# модулей. Модули в проекте — только эксперимент домашнего задания этапа 5,
+# поэтому сканирование выключено везде и включается лишь для его цели.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 # Общие для своих целей предупреждения. Намеренно не через CMAKE_CXX_FLAGS:
 # иначе они распространятся и на исходники GoogleTest, загруженные через
@@ -34,6 +38,8 @@ add_library(kvs_core
         src/file.cpp
         src/request_cache.cpp
         src/server.cpp
+        src/glob.cpp
+        src/bytes.cpp
         src/lexer.cpp
         src/parser.cpp
         src/executor.cpp
@@ -63,7 +69,11 @@ add_executable(kvs_tests
         tests/test_log.cpp
         tests/test_file.cpp
         tests/test_cache.cpp
-        tests/test_cycle.cpp)
+        tests/test_cycle.cpp
+        tests/test_concepts.cpp
+        tests/test_keys.cpp
+        tests/test_version.cpp
+        tests/test_generator.cpp)
 target_include_directories(kvs_tests PRIVATE tools)
 target_link_libraries(kvs_tests PRIVATE kvs_core kvs_warnings GTest::gtest_main)
 
@@ -110,3 +120,51 @@ add_executable(kvs_cycle_leak EXCLUDE_FROM_ALL tools/cycle_demo.cpp)
 target_include_directories(kvs_cycle_leak PRIVATE tools)
 target_compile_definitions(kvs_cycle_leak PRIVATE KVS_LEAKING_CYCLE)
 target_link_libraries(kvs_cycle_leak PRIVATE kvs_warnings)
+
+# --- Этап 5: программы, которые не должны собираться -----------------------
+#
+# Каждая — отдельная цель вне обычной сборки и тест, который пытается её
+# собрать и проверяет, что сборка упала, причём по ожидаемой причине: вывод
+# компилятора сверяется с образцом. Так «не компилируется» становится
+# проверяемым утверждением, а не словами в README.
+function(kvs_expect_compile_failure name source expect)
+    add_executable(${name} EXCLUDE_FROM_ALL ${source})
+    target_link_libraries(${name} PRIVATE kvs_core kvs_warnings)
+    add_test(NAME ${name}
+             COMMAND ${CMAKE_COMMAND} -DBUILD_DIR=${CMAKE_BINARY_DIR} -DTARGET=${name}
+                     "-DEXPECT=${expect}"
+                     -P ${CMAKE_SOURCE_DIR}/cmake/expect_compile_failure.cmake)
+endfunction()
+
+# Конвейер над временным контейнером: ranges::find возвращает
+# std::ranges::dangling вместо итератора, и разыменовать его нельзя.
+kvs_expect_compile_failure(kvs_dangling_range_fail tests/compile_fail/dangling_range.cpp
+                           "dangling")
+
+# Одна и та же ошибка — нарушение требования к ключу — с концепцией и с
+# enable_if. Сравнение объёма диагностики — в docs/concepts.md.
+kvs_expect_compile_failure(kvs_concept_diagnostics_fail tests/compile_fail/concept_key.cpp
+                           "KeyLike")
+kvs_expect_compile_failure(kvs_enable_if_diagnostics_fail tests/compile_fail/enable_if_key.cpp
+                           "enable_if")
+
+# Та же пара на стандартной библиотеке, где разница в объёме видна лучше всего:
+# std::sort и std::ranges::sort над std::list.
+kvs_expect_compile_failure(kvs_sort_classic_fail tests/compile_fail/sort_classic.cpp
+                           "operator-")
+kvs_expect_compile_failure(kvs_sort_ranges_fail tests/compile_fail/sort_ranges.cpp
+                           "random_access")
+
+# Домашнее задание этапа 5: модули. Включаются явно, -DKVS_MODULES=ON:
+# поддержка в CMake, Ninja и компиляторах всё ещё неровная, и обычная сборка
+# от неё зависеть не должна. Что получилось и что нет — docs/modules.md.
+option(KVS_MODULES "Build the C++ modules experiment (stage 5 homework)" OFF)
+if(KVS_MODULES)
+    add_library(kvs_glob_module)
+    set_target_properties(kvs_glob_module PROPERTIES CXX_SCAN_FOR_MODULES ON)
+    target_sources(kvs_glob_module PUBLIC FILE_SET CXX_MODULES FILES modules/kvs.glob.cppm)
+    target_link_libraries(kvs_glob_module PRIVATE kvs_warnings)
+    add_executable(kvs_modules_demo modules/demo.cpp)
+    set_target_properties(kvs_modules_demo PROPERTIES CXX_SCAN_FOR_MODULES ON)
+    target_link_libraries(kvs_modules_demo PRIVATE kvs_glob_module kvs_warnings)
+endif()

@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "kvs/errors.hpp"
-#include "kvs/result.hpp"
+#include <expected>
 
 namespace kvs {
 
@@ -20,11 +20,11 @@ using Tokens = std::vector<std::string_view>;
 // вариантов — tokenize лишь превращает ошибку в исключение. Лексер один,
 // чтобы два пути разбора различались только обработкой ошибок, а не
 // правилами разбиения строки.
-[[nodiscard]] Result<Tokens, ParseError> try_tokenize(std::string_view line);
+[[nodiscard]] std::expected<Tokens, ParseError> try_tokenize(std::string_view line);
 
 // Перегрузки для временной строки удалены: результат смотрел бы на строку,
 // разрушенную в конце полного выражения.
 Tokens tokenize(std::string&&) = delete;
-Result<Tokens, ParseError> try_tokenize(std::string&&) = delete;
+std::expected<Tokens, ParseError> try_tokenize(std::string&&) = delete;
 
 }  // namespace kvs

@@ -2,13 +2,15 @@
 
 #include <cstdint>
 #include <exception>
+#include <format>
 #include <limits>
 #include <memory>
-#include <sstream>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include "chat/errors.hpp"
 #include "chat/overloaded.hpp"
@@ -62,8 +64,20 @@ void require_member(const ChatStore& store, std::string_view room, const Session
     return current + by;
 }
 
-[[nodiscard]] std::string without_last_newline(const std::string& text, const char* empty) {
-    return text.empty() ? std::string(empty) : text.substr(0, text.size() - 1);
+// Сообщение с идентификатором от хранилища. Все отправки идут через эту
+// функцию: сообщение без идентификатора в истории не появляется.
+[[nodiscard]] MessagePtr stamped(ChatStore& store, MessagePtr message) {
+    message->assign_id(store.next_message_id(message->author()));
+    return message;
+}
+
+// Склейка строк через перевод строки — views::join_with из C++23, без
+// ручного счёта, где ставить разделитель.
+[[nodiscard]] std::string joined(const std::vector<std::string>& lines, const char* empty) {
+    if (lines.empty()) {
+        return empty;
+    }
+    return std::ranges::to<std::string>(lines | std::views::join_with('\n'));
 }
 
 // Короткое описание команды для цепочки контекста: глагол и комнаты.
@@ -97,14 +111,14 @@ Response run_command(ChatStore& store, Session& session, const Command& command)
         overloaded{
             [&](const JoinCommand& c) {
                 if (store.join(c.room, session.nick)) {
-                    store.post(c.room, make_notice(session.nick, session.nick + " joined"));
+                    store.post(c.room, stamped(store, make_notice(session.nick, session.nick + " joined")));
                 }
                 return Response{true, "OK"};
             },
             [&](const LeaveCommand& c) {
                 require_member(store, c.room, session);
                 store.leave(c.room, session.nick);
-                store.post(c.room, make_notice(session.nick, session.nick + " left"));
+                store.post(c.room, stamped(store, make_notice(session.nick, session.nick + " left")));
                 return Response{true, "OK"};
             },
             [&](const MsgCommand& c) {
@@ -113,7 +127,7 @@ Response run_command(ChatStore& store, Session& session, const Command& command)
                 for (const std::string_view room : c.rooms) {
                     require_member(store, room, session);
                 }
-                store.post_many(c.rooms, make_message(session.nick, c.text));
+                store.post_many(c.rooms, stamped(store, make_message(session.nick, c.text)));
                 return Response{true, "OK"};
             },
             [&](const WhoCommand& c) {
@@ -121,25 +135,31 @@ Response run_command(ChatStore& store, Session& session, const Command& command)
                 if (!members) {
                     throw UnknownRoomError(std::string(c.room));
                 }
-                std::ostringstream out;
-                for (const std::shared_ptr<User>& user : *members) {
-                    out << user->nick() << '\n';
-                }
-                return Response{true, without_last_newline(out.str(), "(empty)")};
+                // transform превращает участников в ники прямо в конвейере.
+                const auto nicks = *members | std::views::transform([](const auto& user) {
+                    return user->nick();
+                });
+                return Response{true, joined(std::ranges::to<std::vector<std::string>>(nicks),
+                                             "(empty)")};
             },
             [&](const HistoryCommand& c) {
-                const auto history = store.history(c.room);
-                if (!history) {
+                // Этап 5: последние limit сообщений, при необходимости — только
+                // одного автора, ленивым конвейером ranges (history_where).
+                const auto selected = store.history_where(
+                    c.room,
+                    [&c](const MessagePtr& message) {
+                        return !c.author || message->author() == *c.author;
+                    },
+                    c.limit);
+                if (!selected) {
                     throw UnknownRoomError(std::string(c.room));
                 }
-                const History& messages = history->get();
-                const std::size_t from = messages.size() > c.limit ? messages.size() - c.limit : 0;
-                std::ostringstream out;
-                for (std::size_t i = from; i < messages.size(); ++i) {
-                    out << i << ": <" << messages[i]->author() << "> " << messages[i]->to_string()
-                        << '\n';
+                std::vector<std::string> lines;
+                for (const auto& [index, message] : *selected) {
+                    lines.push_back(std::format("{}: <{}> {}", index, message.get()->author(),
+                                                message.get()->to_string()));
                 }
-                return Response{true, without_last_newline(out.str(), "(empty)")};
+                return Response{true, joined(lines, "(empty)")};
             },
             [&](const TypeCommand& c) {
                 if (!store.contains(c.room)) {
@@ -184,7 +204,7 @@ Response run_command(ChatStore& store, Session& session, const Command& command)
                 require_member(store, c.room, session);
                 const std::string topic(*c.topic);
                 store.set_topic(c.room, topic);
-                store.post(c.room, make_notice(session.nick, session.nick + " set topic: " + topic));
+                store.post(c.room, stamped(store, make_notice(session.nick, session.nick + " set topic: " + topic)));
                 return Response{true, "OK"};
             },
             [&](const NickCommand& c) {

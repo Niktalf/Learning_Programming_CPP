@@ -66,21 +66,21 @@ constexpr int max_priority = 9;
 
 // prio=N, где N от 0 до 9. Фаззер проверял prio=-1, prio=10 и prio=99999999999:
 // все три отвергаются здесь, ещё на этапе 2.
-[[nodiscard]] Result<int, std::string> priority_of(std::string_view token) {
+[[nodiscard]] std::expected<int, std::string> priority_of(std::string_view token) {
     const std::string_view digits = token.substr(priority_prefix.size());
     const auto priority = to_number<int>(digits);
     if (!priority || *priority < 0 || *priority > max_priority) {
-        return Unexpected{"priority must be 0.." + std::to_string(max_priority) + ": " +
-                          std::string(digits)};
+        return std::unexpected("priority must be 0.." + std::to_string(max_priority) + ": " +
+                          std::string(digits));
     }
     return *priority;
 }
 
-[[nodiscard]] Result<TaskId, std::string> id_of(std::string_view token) {
+[[nodiscard]] std::expected<TaskId, std::string> id_of(std::string_view token) {
     if (const auto id = to_number<TaskId>(token); id) {
         return *id;
     }
-    return Unexpected{"task id must be a non-negative number: " + std::string(token)};
+    return std::unexpected("task id must be a non-negative number: " + std::string(token));
 }
 
 [[nodiscard]] std::string arity(std::string_view verb, std::string_view expected) {
@@ -96,16 +96,16 @@ constexpr int max_priority = 9;
 // ли приоритет, поэтому строка разбирается дважды: сначала с хвостом после
 // третьего токена, и если третий — не приоритет, то с хвостом после второго.
 //
-// Функция общая для обоих путей и возвращает Result: исключающий путь
-// вызывает её через value().
-[[nodiscard]] Result<SubmitCommand, ParseError> try_parse_submit(std::string_view line) {
+// Функция общая для обоих путей и возвращает std::expected; исключающий
+// путь бросает её ошибку сам.
+[[nodiscard]] std::expected<SubmitCommand, ParseError> try_parse_submit(std::string_view line) {
     const auto reject = [line](std::string reason) {
-        return Unexpected{ParseError(std::move(reason), std::string(line))};
+        return std::unexpected(ParseError(std::move(reason), std::string(line)));
     };
 
     const auto with_priority = try_tokenize(line, 4);
     if (!with_priority) {
-        return Unexpected{with_priority.error()};
+        return std::unexpected(with_priority.error());
     }
     const Tokens& tokens = *with_priority;
     if (tokens.size() < 2) {
@@ -128,7 +128,7 @@ constexpr int max_priority = 9;
 
     const auto plain = try_tokenize(line, 3);
     if (!plain) {
-        return Unexpected{plain.error()};
+        return std::unexpected(plain.error());
     }
     if (plain->size() < 3) {
         return reject("SUBMIT needs a body");
@@ -139,31 +139,70 @@ constexpr int max_priority = 9;
 // Разбор пакета: SUBMITBATCH очередь [prio=N] тело очередь [prio=N] тело ...
 // Тело — один токен: несколько слов берутся в кавычки. Хвоста строки здесь
 // нет, иначе было бы непонятно, где кончается одно тело и начинается другое.
-[[nodiscard]] Result<BatchCommand, std::string> split_batch(const Tokens& tokens) {
+[[nodiscard]] std::expected<BatchCommand, std::string> split_batch(const Tokens& tokens) {
     BatchCommand batch;
     std::size_t i = 1;
     while (i < tokens.size()) {
         const std::string_view queue = tokens[i++];
         if (const auto problem = queue_name_problem(queue); problem) {
-            return Unexpected{*problem};
+            return std::unexpected(*problem);
         }
         int priority = 0;
         if (i < tokens.size() && is_priority(tokens[i])) {
             const auto parsed = priority_of(tokens[i++]);
             if (!parsed) {
-                return Unexpected{parsed.error()};
+                return std::unexpected(parsed.error());
             }
             priority = *parsed;
         }
         if (i >= tokens.size()) {
-            return Unexpected{"SUBMITBATCH item for " + std::string(queue) + " has no body"};
+            return std::unexpected("SUBMITBATCH item for " + std::string(queue) + " has no body");
         }
         batch.items.push_back(SubmitCommand{queue, priority, tokens[i++]});
     }
     if (batch.items.empty()) {
-        return Unexpected{std::string("SUBMITBATCH expects at least one item")};
+        return std::unexpected(std::string("SUBMITBATCH expects at least one item"));
     }
     return batch;
+}
+
+// Разбор LIST: очередь и именованные аргументы prio>=N, type=вид, limit=N
+// в любом порядке, каждый не больше одного раза.
+[[nodiscard]] std::expected<ListCommand, std::string> split_list(const Tokens& tokens) {
+    if (tokens.size() < 2) {
+        return std::unexpected(std::string("LIST expects a queue"));
+    }
+    if (const auto problem = queue_name_problem(tokens[1]); problem) {
+        return std::unexpected(*problem);
+    }
+    ListCommand list{tokens[1], 0, std::nullopt, default_list_limit};
+    bool seen_priority = false;
+    bool seen_limit = false;
+    for (std::size_t i = 2; i < tokens.size(); ++i) {
+        const std::string_view token = tokens[i];
+        if (token.starts_with("prio>=") && !seen_priority) {
+            const auto priority = to_number<int>(token.substr(6));
+            if (!priority || *priority < 0 || *priority > max_priority) {
+                return std::unexpected("priority must be 0.." + std::to_string(max_priority) +
+                                       ": " + std::string(token.substr(6)));
+            }
+            list.min_priority = *priority;
+            seen_priority = true;
+        } else if (token.starts_with("type=") && !list.kind) {
+            list.kind = token.substr(5);
+        } else if (token.starts_with("limit=") && !seen_limit) {
+            const auto limit = to_number<std::size_t>(token.substr(6));
+            if (!limit) {
+                return std::unexpected("limit must be a non-negative number: " +
+                                       std::string(token.substr(6)));
+            }
+            list.limit = *limit;
+            seen_limit = true;
+        } else {
+            return std::unexpected("unexpected LIST argument: " + std::string(token));
+        }
+    }
+    return list;
 }
 
 // Путь на исключениях. [[noreturn]] сообщает компилятору, что управление
@@ -172,9 +211,9 @@ constexpr int max_priority = 9;
     throw ParseError(std::move(reason), std::string(line));
 }
 
-// Путь на Result: та же ошибка, но возвращается значением.
-[[nodiscard]] Unexpected<ParseError> failure(std::string reason, std::string_view line) {
-    return Unexpected{ParseError(std::move(reason), std::string(line))};
+// Путь на std::expected: та же ошибка, но возвращается значением.
+[[nodiscard]] std::unexpected<ParseError> failure(std::string reason, std::string_view line) {
+    return std::unexpected(ParseError(std::move(reason), std::string(line)));
 }
 
 }  // namespace
@@ -195,7 +234,13 @@ Command parse(const InputLine& input) {
     const std::string_view verb = head.front();
 
     if (is(verb, "SUBMIT")) {
-        return try_parse_submit(line).value();
+        // value() у std::expected бросил бы bad_expected_access, а граница
+        // ждёт ParseError — поэтому ошибка бросается явно.
+        auto submit = try_parse_submit(line);
+        if (!submit) {
+            throw std::move(submit).error();
+        }
+        return *submit;
     }
 
     const Tokens tokens = tokenize(line);
@@ -207,6 +252,13 @@ Command parse(const InputLine& input) {
             fail(batch.error(), line);
         }
         return std::move(batch).value();
+    }
+    if (is(verb, "LIST")) {
+        auto list = split_list(tokens);
+        if (!list) {
+            fail(list.error(), line);
+        }
+        return *list;
     }
     if (is(verb, "CREATE")) {
         if (argc != 1) {
@@ -299,14 +351,14 @@ Command parse(const InputLine& input) {
 // Тот же разбор, но ошибка возвращается. Каждый шаг, который может не
 // удаться, проверяется на месте, и ошибка передаётся наверх вручную — в том
 // числе ошибка лексера. Сравнение двух путей — в docs/errors.md.
-Result<Command, ParseError> try_parse(const InputLine& input) {
+std::expected<Command, ParseError> try_parse(const InputLine& input) {
     const std::string_view line = input.view();
     if (const auto problem = line_problem(line); problem) {
         return failure(*problem, line);
     }
     const auto head = try_tokenize(line, 2);
     if (!head) {
-        return Unexpected{head.error()};
+        return std::unexpected(head.error());
     }
     if (head->empty()) {
         return failure("empty command", line);
@@ -316,14 +368,14 @@ Result<Command, ParseError> try_parse(const InputLine& input) {
     if (is(verb, "SUBMIT")) {
         auto submit = try_parse_submit(line);
         if (!submit) {
-            return Unexpected{submit.error()};
+            return std::unexpected(submit.error());
         }
         return Command{*submit};
     }
 
     const auto all = try_tokenize(line);
     if (!all) {
-        return Unexpected{all.error()};
+        return std::unexpected(all.error());
     }
     const Tokens& tokens = *all;
     const std::size_t argc = tokens.size() - 1;
@@ -334,6 +386,13 @@ Result<Command, ParseError> try_parse(const InputLine& input) {
             return failure(batch.error(), line);
         }
         return Command{std::move(batch).value()};
+    }
+    if (is(verb, "LIST")) {
+        auto list = split_list(tokens);
+        if (!list) {
+            return failure(list.error(), line);
+        }
+        return Command{*list};
     }
     if (is(verb, "CREATE")) {
         if (argc != 1) {

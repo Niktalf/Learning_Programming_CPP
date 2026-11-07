@@ -8,6 +8,8 @@
 #include <string_view>
 #include <utility>
 
+#include "chat/message_id.hpp"
+
 namespace chat {
 
 using Timestamp = std::chrono::system_clock::time_point;
@@ -31,6 +33,12 @@ public:
     [[nodiscard]] const std::string& author() const noexcept { return author_; }
     [[nodiscard]] Timestamp at() const noexcept { return at_; }
 
+    // Этап 5: идентификатор, который выдаёт хранилище при отправке. Копии
+    // сообщения, разосланные в несколько комнат, делаются clone и несут тот
+    // же идентификатор: это одно сообщение.
+    [[nodiscard]] const MessageId& id() const noexcept { return id_; }
+    void assign_id(MessageId id) noexcept { id_ = std::move(id); }
+
     [[nodiscard]] virtual std::string_view type_name() const noexcept = 0;
     [[nodiscard]] virtual std::string to_string() const = 0;
     [[nodiscard]] virtual std::size_t size() const noexcept = 0;
@@ -50,6 +58,7 @@ protected:
 private:
     std::string author_;
     Timestamp at_;
+    MessageId id_;
 };
 
 using MessagePtr = std::unique_ptr<IMessage>;

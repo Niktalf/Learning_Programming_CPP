@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 #include <utility>
@@ -29,8 +30,17 @@ struct MsetCommand   { std::vector<std::pair<std::string_view, std::string_view>
 struct RpushCommand  { std::string_view key; std::string_view item; };
 struct LlenCommand   { std::string_view key; };
 
+// Этап 5: KEYS стал командой с образцом и пределом — KEYS user:* 10 — и
+// реализован ленивым конвейером ranges. VERSION показывает версию записи.
+struct KeysCommand    { std::string_view pattern; std::size_t limit; };
+struct VersionCommand { std::string_view key; };
+
 using Command = std::variant<SetCommand, GetCommand, DelCommand, ExistsCommand,
                              TypeCommand, IncrCommand, MsetCommand, RpushCommand,
-                             LlenCommand>;
+                             LlenCommand, KeysCommand, VersionCommand>;
+
+// Предел KEYS по умолчанию: таблица может быть огромной, и выдавать её
+// целиком в ответ на опечатку в образце — плохая идея.
+inline constexpr std::size_t default_keys_limit = 100;
 
 }  // namespace kvs

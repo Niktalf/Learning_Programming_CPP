@@ -1,5 +1,7 @@
 #include <exception>
+#include <cstdio>
 #include <iostream>
+#include <print>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -10,20 +12,23 @@
 
 namespace {
 
+// Этап 5: стандарт C++23, вывод через std::print. Текст справки — одна
+// сырая строка: так её видно целиком, как она будет напечатана.
 void print_help() {
-    std::cout << "Commands:\n"
-              << "  /join <#room>                 join a room (creates it if needed)\n"
-              << "  /leave <#room>                leave a room\n"
-              << "  /msg <#room>[,#room...] <text>  post to one or several rooms, all or none;\n"
-              << "                                :name: posts a reaction\n"
-              << "  /who <#room>                  list room members\n"
-              << "  /history <#room> [limit]      show the last messages\n"
-              << "  /type <#room> <index>         kind of a message\n"
-              << "  /react <#room> <index> [n]    add to a reaction counter\n"
-              << "  /topic <#room> [\"topic\"]      show or set the topic\n"
-              << "  /nick <nickname>              change your nickname\n"
-              << "  DEMO                          capture by reference vs by value\n"
-              << "  HELP / QUIT\n";
+    std::print(R"(Commands:
+  /join <#room>                     join a room (creates it if needed)
+  /leave <#room>                    leave a room
+  /msg <#room>[,#room...] <text>    post to one or several rooms, all or none;
+                                    :name: posts a reaction
+  /who <#room>                      list room members
+  /history <#room> [limit] [nick]   show the last messages, optionally of one author
+  /type <#room> <index>             kind of a message
+  /react <#room> <index> [n]        add to a reaction counter
+  /topic <#room> ["topic"]          show or set the topic
+  /nick <nickname>                  change your nickname
+  DEMO                              capture by reference vs by value
+  HELP / QUIT
+)");
 }
 
 // Демонстрация этапа 1: один и тот же обход с двумя лямбдами.
@@ -38,9 +43,8 @@ void run_capture_demo(const chat::ChatStore& store) {
         by_value += static_cast<int>(history.size());
     });
 
-    std::cout << "captured by reference: " << by_reference << '\n'
-              << "captured by value:     " << by_value
-              << "   (the lambda changed its own copy)\n";
+    std::println("captured by reference: {}", by_reference);
+    std::println("captured by value:     {}   (the lambda changed its own copy)", by_value);
 }
 
 struct Arguments {
@@ -75,13 +79,13 @@ struct Arguments {
 int main(int argc, char* argv[]) {
     const auto arguments = parse_arguments(argc, argv);
     if (!arguments) {
-        std::cerr << "usage: chat_cli [nickname] [--log=PATH]\n";
+        std::println(stderr, "usage: chat_cli [nickname] [--log=PATH]");
         return 2;
     }
     // Ник из командной строки проверяется теми же правилами, что и /nick:
     // иначе ник из одних пробелов попал бы в реестр в обход разбора.
     if (const auto problem = chat::nick_problem(arguments->nick); problem) {
-        std::cerr << "bad nickname: " << *problem << '\n';
+        std::println(stderr, "bad nickname: {}", *problem);
         return 2;
     }
 
@@ -96,13 +100,13 @@ int main(int argc, char* argv[]) {
             server.emplace();
         }
     } catch (const std::exception& e) {
-        std::cerr << "cannot start: " << e.what() << '\n';
+        std::println(stderr, "cannot start: {}", e.what());
         return 1;
     }
     // Реестр пуст, ник не может быть занят.
     chat::Session session = server->login(arguments->nick);
 
-    std::cout << "CHAT, stage 4, you are " << session.nick << '\n';
+    std::println("CHAT, stage 5, you are {}", session.nick);
     print_help();
 
     std::string raw;   // объявлена до цикла: в неё читает std::getline
@@ -124,7 +128,7 @@ int main(int argc, char* argv[]) {
         }
         // Вся обработка ошибок команд — внутри handle. Здесь нет ни одного
         // try: консольный клиент просто печатает ответ, каким бы он ни был.
-        std::cout << server->handle(session, std::move(raw)).text << '\n';
+        std::println("{}", server->handle(session, std::move(raw)).text);
     }
     server->logout(session);
     return 0;

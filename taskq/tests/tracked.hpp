@@ -1,7 +1,10 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <utility>
+
+#include "taskq/task_key.hpp"
 
 namespace taskq {
 namespace testing {
@@ -20,7 +23,7 @@ inline int& move_counter() {
 }
 
 // Инструментированный тип-шпион: считает копирования и перемещения.
-// Живёт только в тестах, поэтому Value остаётся написанным по правилу нуля.
+// Живёт только в тестах, поэтому Task не обрастает счётчиками.
 class Tracked {
 public:
     Tracked() = default;
@@ -47,13 +50,20 @@ public:
 
     const std::string& str() const noexcept { return data_; }
 
+    // Этап 5: хранилище задач требует номер и ключ выборки — концепция
+    // QueuedTask. Шпиону номер не важен, ключ — только номер постановки.
+    [[nodiscard]] std::uint64_t id() const noexcept { return 0; }
+    [[nodiscard]] TaskKey key() const { return TaskKey{0, sequence_, std::string()}; }
+    void set_sequence(std::uint64_t sequence) noexcept { sequence_ = sequence; }
+
     static void reset() noexcept { copy_counter() = 0; move_counter() = 0; }
     static int copies() noexcept { return copy_counter(); }
     static int moves() noexcept { return move_counter(); }
 
 private:
     std::string data_;
+    std::uint64_t sequence_ = 0;
 };
 
 }  // namespace testing
-}  // namespace kvs
+}  // namespace taskq

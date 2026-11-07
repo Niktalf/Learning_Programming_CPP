@@ -1,16 +1,24 @@
 #pragma once
 
+#include <algorithm>
+#include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <generator>
 #include <map>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "kvs/concepts.hpp"
 #include "kvs/errors.hpp"
+#include "kvs/glob.hpp"
 #include "kvs/value.hpp"
+#include "kvs/version.hpp"
 
 namespace kvs {
 
@@ -18,7 +26,11 @@ namespace kvs {
 // в тестах вместо Value подставляется инструментированный тип, считающий
 // копирования и перемещения. Без этого утверждение «вставка временного
 // объекта не копирует» проверить нечем.
-template <class V>
+//
+// Этап 5: требования к типу значения записаны концепцией StorableValue.
+// Подставить тип без size() или с бросающим перемещением — одна строка
+// диагностики, а не ошибка где-то в глубине std::map.
+template <StorableValue V>
 class BasicStore {
 public:
     BasicStore() = default;
@@ -31,15 +43,26 @@ public:
     // Сильная гарантия: всё, что может бросить, — проверка предела и вставка —
     // происходит до изменения учёта занятой памяти. Бросок оставляет
     // хранилище прежним.
-    void set(std::string key, V value) {
+    //
+    // Этап 5: каждая запись получает версию — следующее поколение ключа и
+    // отметку логических часов хранилища. Версия лежит в той же записи
+    // таблицы, что и значение: одна вставка вместо двух, и согласовывать
+    // два контейнера при броске не нужно.
+    void set(std::string key, V value, std::string author = "local") {
         const std::size_t added = footprint(key, value);
         const auto it = data_.find(key);
-        const std::size_t removed = it == data_.end() ? 0 : footprint(it->first, it->second);
+        const std::size_t removed = it == data_.end() ? 0 : footprint(it->first, it->second.value);
         const std::size_t next_used = used_ - removed + added;
         require_room(key, next_used);
+
+        const std::uint64_t generation = it == data_.end() ? 1 : it->second.version.generation + 1;
+        Entry entry{std::move(value), RecordVersion{generation, clock_ + 1, std::move(author)}};
         // insert_or_assign из C++17: одна операция вместо поиска и вставки.
-        data_.insert_or_assign(std::move(key), std::move(value));
+        // Бросить может только выделение узла для нового ключа, и тогда
+        // ничего не изменено; дальше — операции, которые не бросают.
+        data_.insert_or_assign(std::move(key), std::move(entry));
         used_ = next_used;
+        ++clock_;
     }
 
     // Этап 2: вместо сырого указателя — std::optional. Отсутствие значения
@@ -51,16 +74,92 @@ public:
     // предусмотрен. Для небольшого значения копия приемлема; там, где она
     // была бы дорогой, пришлось бы брать reference_wrapper или указатель,
     // и это стоит помнить как ограничение, а не считать optional бесплатным.
-    [[nodiscard]] std::optional<V> get(std::string_view key) const {
-        const auto it = data_.find(key);
+    //
+    // Этап 5: ключ — любой KeyLike: std::string, std::string_view или
+    // литерал. get(42) не соберётся с внятным сообщением.
+    template <KeyLike K>
+    [[nodiscard]] std::optional<V> get(const K& key) const {
+        const auto it = data_.find(key_view(key));
         if (it == data_.end()) {
             return std::nullopt;
         }
-        return it->second;
+        return it->second.value;
     }
 
-    [[nodiscard]] bool contains(std::string_view key) const noexcept {
-        return data_.find(key) != data_.end();
+    template <KeyLike K>
+    [[nodiscard]] bool contains(const K& key) const noexcept {
+        return data_.find(key_view(key)) != data_.end();
+    }
+
+    template <KeyLike K>
+    [[nodiscard]] std::optional<RecordVersion> version(const K& key) const {
+        const auto it = data_.find(key_view(key));
+        if (it == data_.end()) {
+            return std::nullopt;
+        }
+        return it->second.version;
+    }
+
+    // --- Этап 5: KEYS через ranges --------------------------------------
+    //
+    // Ленивый конвейер: views::keys над таблицей, filter по предикату,
+    // take по пределу. Ничего не материализуется до take: предикат
+    // вызывается, только пока не набралось limit подходящих ключей. Тест
+    // Keys.PipelineIsLazy проверяет это счётчиком вызовов.
+    //
+    // Порядок filter и take существен. take | filter взял бы первые limit
+    // ключей подряд и отфильтровал бы среди них — результат другой и почти
+    // наверняка неверный.
+    //
+    // Возвращается вектор, а не само представление. Представление не владеет
+    // и смотрит в таблицу: любая запись, пока его обходят, сделала бы его
+    // висячим — тот же урок, что со string_view на этапе 2.
+    template <std::predicate<std::string_view> Predicate>
+    [[nodiscard]] std::vector<std::string> keys_where(Predicate predicate, std::size_t limit) const {
+        // Предел обрезается по размеру таблицы до того, как попасть в take:
+        // take принимает знаковую разность итераторов, и size_t больше
+        // PTRDIFF_MAX стал бы отрицательным числом — нарушение предусловия
+        // counted_iterator. KEYS * 18446744073709551615 иначе ронял бы
+        // отладочную сборку, а в обычной был бы неопределённым поведением.
+        const auto bounded = static_cast<std::ptrdiff_t>(std::min(limit, data_.size()));
+        auto selected = data_ | std::views::keys |
+                        std::views::filter([&predicate](const std::string& key) {
+                            return std::invoke(predicate, std::string_view(key));
+                        }) |
+                        std::views::take(bounded);
+        // Материализация — обычным циклом, а не std::ranges::to. ranges::to
+        // для прямого (forward) диапазона сначала проходит его целиком, чтобы
+        // узнать размер и зарезервировать память, и лишь затем копирует: в
+        // libstdc++ предикат вызывается почти вдвое чаще. Для дешёвого
+        // предиката это неважно, для glob_match по тысячам ключей — заметно.
+        std::vector<std::string> result;
+        result.reserve(limit < data_.size() ? limit : data_.size());
+        for (const std::string& key : selected) {
+            result.push_back(key);
+        }
+        return result;
+    }
+
+    [[nodiscard]] std::vector<std::string> keys(std::string_view pattern, std::size_t limit) const {
+        return keys_where([pattern](std::string_view key) { return glob_match(pattern, key); },
+                          limit);
+    }
+
+    // Звёздочка этапа 5: те же ключи генератором. Корутина отдаёт ключи по
+    // одному и приостанавливается между ними. Если обход прерван — break,
+    // исключение, — кадр корутины уничтожается в точке приостановки, и её
+    // локальные объекты разрушаются как положено: RAII работает и внутри
+    // корутины. Плата — кадр корутины в куче, и устранить это выделение
+    // компилятор может далеко не всегда.
+    //
+    // Генератор, как и представление, смотрит в таблицу: обходить его можно
+    // только пока хранилище не меняется.
+    [[nodiscard]] std::generator<const std::string&> keys_lazily(std::string pattern) const {
+        for (const auto& [key, entry] : data_) {
+            if (glob_match(pattern, key)) {
+                co_yield key;
+            }
+        }
     }
 
     // Этап 3: несколько ключей одной операцией с сильной гарантией. Либо
@@ -96,14 +195,16 @@ public:
         a.data_.swap(b.data_);
         std::swap(a.used_, b.used_);
         std::swap(a.memory_limit_, b.memory_limit_);
+        std::swap(a.clock_, b.clock_);
     }
 
-    bool del(std::string_view key) {
-        const auto it = data_.find(key);
+    template <KeyLike K>
+    bool del(const K& key) {
+        const auto it = data_.find(key_view(key));
         if (it == data_.end()) {
             return false;
         }
-        used_ -= footprint(it->first, it->second);
+        used_ -= footprint(it->first, it->second.value);
         data_.erase(it);
         return true;
     }
@@ -124,15 +225,19 @@ public:
     // читается через first и second.
     template <class F>
     void for_each(F fn) const {
-        for (const auto& [key, value] : data_) {
-            fn(key, value);
+        for (const auto& [key, entry] : data_) {
+            fn(key, entry.value);
         }
     }
 
 private:
     // std::less<> включает разнородный поиск: методы принимают string_view
     // и не создают временную строку на каждый вызов.
-    using Map = std::map<std::string, V, std::less<>>;
+    struct Entry {
+        V value;
+        RecordVersion version;
+    };
+    using Map = std::map<std::string, Entry, std::less<>>;
 
     [[nodiscard]] static std::size_t footprint(const std::string& key, const V& value) noexcept {
         return key.size() + value.size();
@@ -147,6 +252,7 @@ private:
     Map data_;
     std::size_t used_ = 0;
     std::optional<std::size_t> memory_limit_;
+    std::uint64_t clock_ = 0;   // логические часы: +1 на каждую запись
 };
 
 using Store = BasicStore<Value>;

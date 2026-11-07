@@ -81,7 +81,7 @@ void report(const char* title, const std::vector<std::string>& texts, int rounds
     const double returned = nanoseconds_per_line(lines, rounds, with_result, successes);
     std::cout << title << '\n'
               << "  exceptions: " << thrown << " ns per line\n"
-              << "  Result:     " << returned << " ns per line\n"
+              << "  expected:   " << returned << " ns per line\n"
               << "  ratio:      " << thrown / returned << "\n"
               << "  (parsed " << successes << " lines in total)\n";
 }

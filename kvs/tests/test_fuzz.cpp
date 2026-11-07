@@ -119,7 +119,9 @@ TEST(Fuzz, NumbersAtTheEdge) {
                                             "9223372036854775808", "-1", "0", "1",
                                             "99999999999999999999", "1e9", "0x10", "+5"};
     for (int i = 0; i < iterations; ++i) {
-        feed(server, "INCR n " + edges[static_cast<std::size_t>(pick(0, 9))]);
+        const std::string& edge = edges[static_cast<std::size_t>(pick(0, 9))];
+        feed(server, "INCR n " + edge);
+        feed(server, "KEYS * " + edge);   // этап 5: предел KEYS на краю диапазона
     }
     EXPECT_TRUE(memory_accounting_holds(server.store()));
 }

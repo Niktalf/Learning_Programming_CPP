@@ -1,24 +1,26 @@
 // Второй путь этапа 3: ошибка, возвращённая значением, против исключения.
 // Тесты показывают поведение обоих путей на одних и тех же входах и то, во что
 // обходится проброс ошибки через несколько уровней вызовов.
+//
+// Этап 5: собственный Result заменён на std::expected из C++23. Интерфейс
+// почти тот же; отличие одно, и тест Expected.ValueThrowsBadExpectedAccess
+// его фиксирует.
 
 #include <gtest/gtest.h>
 
+#include <expected>
 #include <string>
 #include <variant>
 
 #include "kvs/errors.hpp"
 #include "kvs/parser.hpp"
-#include "kvs/result.hpp"
 
 using kvs::InputLine;
 using kvs::ParseError;
-using kvs::Result;
-using kvs::Unexpected;
 
-TEST(Result, HoldsValueOrError) {
-    const Result<int, std::string> good = 42;
-    const Result<int, std::string> bad = Unexpected{std::string("broken")};
+TEST(Expected, HoldsValueOrError) {
+    const std::expected<int, std::string> good = 42;
+    const std::expected<int, std::string> bad = std::unexpected(std::string("broken"));
 
     ASSERT_TRUE(good.has_value());
     EXPECT_EQ(*good, 42);
@@ -26,17 +28,42 @@ TEST(Result, HoldsValueOrError) {
     EXPECT_EQ(bad.error(), std::string("broken"));
 }
 
-TEST(Result, SameTypeForValueAndErrorIsUnambiguous) {
-    // Ради этого случая и нужен Unexpected: иначе непонятно, что передали.
-    const Result<std::string, std::string> value = std::string("ok");
-    const Result<std::string, std::string> error = Unexpected{std::string("fail")};
+TEST(Expected, SameTypeForValueAndErrorIsUnambiguous) {
+    // Ради этого случая и нужен std::unexpected: иначе непонятно, что передали.
+    const std::expected<std::string, std::string> value = std::string("ok");
+    const std::expected<std::string, std::string> error = std::unexpected(std::string("fail"));
     EXPECT_TRUE(value.has_value());
     EXPECT_FALSE(error.has_value());
 }
 
-TEST(Result, ValueThrowsTheStoredError) {
-    const Result<int, ParseError> bad = Unexpected{ParseError("reason", "input")};
-    EXPECT_THROW(static_cast<void>(bad.value()), ParseError);
+TEST(Expected, ValueThrowsBadExpectedAccess) {
+    // Отличие от Result этапа 3: value() бросает не саму ошибку, а
+    // std::bad_expected_access<E>, внутри которой ошибка лежит. Поэтому
+    // tokenize больше не сводится к try_tokenize(...).value() — он бросает
+    // error() явно, и граница по-прежнему получает ParseError.
+    const std::expected<int, ParseError> bad = std::unexpected(ParseError("reason", "input"));
+    try {
+        static_cast<void>(bad.value());
+        ADD_FAILURE() << "value() must throw";
+    } catch (const std::bad_expected_access<ParseError>& e) {
+        EXPECT_EQ(e.error().reason(), std::string("reason"));
+    }
+}
+
+TEST(Expected, MonadicChaining) {
+    // and_then и transform из C++23: цепочка шагов, каждый из которых может
+    // не удаться, без ручной проверки после каждого. Это ответ стандарта на
+    // главный недостаток второго пути — ручной проброс через уровни.
+    const auto parse_number = [](const std::string& text) -> std::expected<int, std::string> {
+        if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos) {
+            return std::unexpected("not a number: " + text);
+        }
+        return std::stoi(text);
+    };
+    const auto doubled = parse_number("21").transform([](int value) { return value * 2; });
+    EXPECT_EQ(*doubled, 42);
+    const auto failed = parse_number("x1").transform([](int value) { return value * 2; });
+    EXPECT_EQ(failed.error(), std::string("not a number: x1"));
 }
 
 TEST(TryParse, AgreesWithParseOnValidInput) {
@@ -76,13 +103,13 @@ int throwing_level(int depth) {
     return throwing_level(depth - 1) + 1;   // ни строки про ошибку
 }
 
-Result<int, ParseError> returning_level(int depth) {
+std::expected<int, ParseError> returning_level(int depth) {
     if (depth == 0) {
-        return Unexpected{ParseError("deep failure", "level 0")};
+        return std::unexpected(ParseError("deep failure", "level 0"));
     }
     const auto below = returning_level(depth - 1);
     if (!below) {
-        return Unexpected{below.error()};   // и так на каждом из десяти уровней
+        return std::unexpected(below.error());   // и так на каждом из десяти уровней
     }
     return *below + 1;
 }

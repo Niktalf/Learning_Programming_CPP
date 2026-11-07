@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <new>
 #include <string>
@@ -42,6 +43,11 @@ public:
 
     [[nodiscard]] const std::string& text() const noexcept { return text_; }
 
+    // Этап 5: хранилище требует номер и ключ выборки — концепция QueuedTask.
+    [[nodiscard]] std::uint64_t id() const noexcept { return 0; }
+    [[nodiscard]] taskq::TaskKey key() const { return taskq::TaskKey{0, sequence_, std::string()}; }
+    void set_sequence(std::uint64_t sequence) noexcept { sequence_ = sequence; }
+
 private:
     static void tick() {
         if (countdown() > 0 && --countdown() == 0) {
@@ -49,6 +55,7 @@ private:
         }
     }
     std::string text_;
+    std::uint64_t sequence_ = 0;
 };
 
 using Store = taskq::BasicTaskStore<ThrowOnNthCopy>;

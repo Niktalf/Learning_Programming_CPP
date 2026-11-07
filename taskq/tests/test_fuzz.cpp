@@ -194,6 +194,7 @@ TEST(Fuzz, NumbersAtTheEdge) {
         // Задача 2 — num:40 в очереди build, единственная числовая.
         arena.feed("BUMP 2 " + any_of(edges));
         arena.feed("SUBMIT build num:" + any_of(edges));
+        arena.feed("LIST build limit=" + any_of(edges));   // этап 5: предел LIST на краю
     }
     check_invariants(arena.service);
 }

@@ -1,7 +1,10 @@
 #include <charconv>
 #include <cstddef>
 #include <exception>
+#include <cstdio>
+#include <format>
 #include <iostream>
+#include <print>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -11,25 +14,29 @@
 
 namespace {
 
+// Этап 5: стандарт C++23, вывод через std::print. Текст справки — одна
+// сырая строка: так её видно целиком, как она будет напечатана.
 void print_help() {
-    std::cout << "Commands:\n"
-              << "  SET <key> <value>          store a value (quote values with spaces)\n"
-              << "  MSET <k1> <v1> <k2> <v2>   store several, all or nothing\n"
-              << "  GET <key>                  read a value\n"
-              << "  DEL <key>                  delete a key\n"
-              << "  EXISTS <key>               1 or 0\n"
-              << "  TYPE <key>                 type of the value\n"
-              << "  INCR <key> [step]          increment an integer\n"
-              << "  RPUSH <key> <item>         append to a list\n"
-              << "  LLEN <key>                 length of a list\n"
-              << "  KEYS                       list keys\n"
-              << "  MEMORY                     used bytes and the limit\n"
-              << "  DEMO                       capture by reference vs by value\n"
-              << "  HELP / QUIT\n";
+    std::print(R"(Commands:
+  SET <key> <value>          store a value (quote values with spaces)
+  MSET <k1> <v1> <k2> <v2>   store several, all or nothing
+  GET <key>                  read a value
+  DEL <key>                  delete a key
+  EXISTS <key>               1 or 0
+  TYPE <key>                 type of the value
+  INCR <key> [step]          increment an integer
+  RPUSH <key> <item>         append to a list
+  LLEN <key>                 length of a list
+  KEYS [pattern] [limit]     list keys matching a glob, * and ?
+  VERSION <key>              generation and timestamp of the record
+  MEMORY                     used bytes and the limit
+  DEMO                       capture by reference vs by value
+  HELP / QUIT
+)");
 }
 
 void print_usage() {
-    std::cerr << "usage: kvs_cli [--maxmemory=BYTES] [--log=PATH]\n";
+    std::println(stderr, "usage: kvs_cli [--maxmemory=BYTES] [--log=PATH]");
 }
 
 void run_capture_demo(const kvs::Store& store) {
@@ -43,9 +50,8 @@ void run_capture_demo(const kvs::Store& store) {
         by_value += static_cast<int>(value.size());
     });
 
-    std::cout << "captured by reference: " << by_reference << '\n'
-              << "captured by value:     " << by_value
-              << "   (the lambda changed its own copy)\n";
+    std::println("captured by reference: {}", by_reference);
+    std::println("captured by value:     {}   (the lambda changed its own copy)", by_value);
 }
 
 [[nodiscard]] std::optional<std::size_t> to_size(std::string_view digits) noexcept {
@@ -99,11 +105,11 @@ int main(int argc, char* argv[]) {
     try {
         server.emplace(*options);
     } catch (const std::exception& e) {
-        std::cerr << "cannot start: " << e.what() << '\n';
+        std::println(stderr, "cannot start: {}", e.what());
         return 1;
     }
 
-    std::cout << "KVS, stage 4\n";
+    std::println("KVS, stage 5");
     print_help();
 
     std::string raw;   // объявлена до цикла: в неё читает std::getline
@@ -123,24 +129,15 @@ int main(int argc, char* argv[]) {
             run_capture_demo(server->store());
             continue;
         }
-        if (view == "KEYS") {
-            server->store().for_each([](const std::string& key, const kvs::Value&) {
-                std::cout << key << '\n';
-            });
-            continue;
-        }
         if (view == "MEMORY") {
-            std::cout << "used " << server->store().used_bytes() << " bytes, limit ";
-            if (const auto limit = server->store().memory_limit(); limit) {
-                std::cout << *limit << " bytes\n";
-            } else {
-                std::cout << "none\n";
-            }
+            const auto limit = server->store().memory_limit();
+            std::println("used {} bytes, limit {}", server->store().used_bytes(),
+                         limit ? std::format("{} bytes", *limit) : std::string("none"));
             continue;
         }
         // Вся обработка ошибок команд — внутри handle. Здесь нет ни одного
         // try: консольный клиент просто печатает ответ, каким бы он ни был.
-        std::cout << server->handle(std::move(raw)).text << '\n';
+        std::println("{}", server->handle(std::move(raw)).text);
     }
     return 0;
 }

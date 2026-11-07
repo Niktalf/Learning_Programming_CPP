@@ -39,13 +39,23 @@ namespace {
 // несёт исходную строку, и собирать её в каждой ветке было бы шумно.
 // [[noreturn]] сообщает компилятору, что управление отсюда не вернётся, —
 // тогда он не требует return после вызова.
+[[nodiscard]] std::optional<std::size_t> to_size(std::string_view token) noexcept {
+    std::size_t value = 0;
+    const char* const last = token.data() + token.size();
+    const auto [end, error] = std::from_chars(token.data(), last, value);
+    if (error != std::errc{} || end != last) {
+        return std::nullopt;
+    }
+    return value;
+}
+
 [[noreturn]] void fail(std::string reason, std::string_view line) {
     throw ParseError(std::move(reason), std::string(line));
 }
 
 // То же для второго пути: ошибка не бросается, а возвращается значением.
-[[nodiscard]] Unexpected<ParseError> failure(std::string reason, std::string_view line) {
-    return Unexpected{ParseError(std::move(reason), std::string(line))};
+[[nodiscard]] std::unexpected<ParseError> failure(std::string reason, std::string_view line) {
+    return std::unexpected(ParseError(std::move(reason), std::string(line)));
 }
 
 }  // namespace
@@ -127,6 +137,24 @@ Command parse(const InputLine& input) {
         }
         return LlenCommand{tokens[1]};
     }
+    if (equals_ignore_case(verb, "KEYS")) {
+        if (argc > 2) {
+            fail("KEYS expects an optional pattern and limit", line);
+        }
+        const std::string_view pattern = argc >= 1 ? tokens[1] : std::string_view("*");
+        const std::optional<std::size_t> limit =
+            argc == 2 ? to_size(tokens[2]) : std::optional<std::size_t>{default_keys_limit};
+        if (!limit) {
+            fail("limit must be a non-negative number: " + std::string(tokens[2]), line);
+        }
+        return KeysCommand{pattern, *limit};
+    }
+    if (equals_ignore_case(verb, "VERSION")) {
+        if (argc != 1) {
+            fail("VERSION expects 1 argument", line);
+        }
+        return VersionCommand{tokens[1]};
+    }
     fail("unknown command: " + std::string(verb), line);
 }
 
@@ -135,12 +163,12 @@ Command parse(const InputLine& input) {
 // так видна настоящая цена этого стиля. Каждая проверка заканчивается явным
 // return, и каждую ошибку снизу — здесь от лексера — надо проверить и
 // передать наверх вручную. Сравнение двух путей — в docs/errors.md.
-Result<Command, ParseError> try_parse(const InputLine& input) {
+std::expected<Command, ParseError> try_parse(const InputLine& input) {
     const std::string_view line = input.view();
 
     auto tokenized = try_tokenize(line);
     if (!tokenized) {
-        return Unexpected{tokenized.error()};   // ручной проброс ошибки лексера
+        return std::unexpected(tokenized.error());   // ручной проброс ошибки лексера
     }
     const Tokens& tokens = *tokenized;
     if (tokens.empty()) {
@@ -213,6 +241,24 @@ Result<Command, ParseError> try_parse(const InputLine& input) {
             return failure("LLEN expects 1 argument", line);
         }
         return Command{LlenCommand{tokens[1]}};
+    }
+    if (equals_ignore_case(verb, "KEYS")) {
+        if (argc > 2) {
+            return failure("KEYS expects an optional pattern and limit", line);
+        }
+        const std::string_view pattern = argc >= 1 ? tokens[1] : std::string_view("*");
+        const std::optional<std::size_t> limit =
+            argc == 2 ? to_size(tokens[2]) : std::optional<std::size_t>{default_keys_limit};
+        if (!limit) {
+            return failure("limit must be a non-negative number: " + std::string(tokens[2]), line);
+        }
+        return Command{KeysCommand{pattern, *limit}};
+    }
+    if (equals_ignore_case(verb, "VERSION")) {
+        if (argc != 1) {
+            return failure("VERSION expects 1 argument", line);
+        }
+        return Command{VersionCommand{tokens[1]}};
     }
     return failure("unknown command: " + std::string(verb), line);
 }

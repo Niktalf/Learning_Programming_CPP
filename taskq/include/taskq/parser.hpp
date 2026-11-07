@@ -6,7 +6,7 @@
 
 #include "taskq/command.hpp"
 #include "taskq/errors.hpp"
-#include "taskq/result.hpp"
+#include <expected>
 
 namespace taskq {
 
@@ -47,12 +47,12 @@ private:
 // они различаются по читаемости, стоимости и пробросу через уровни, написано
 // в docs/errors.md.
 [[nodiscard]] Command parse(const InputLine& line);
-[[nodiscard]] Result<Command, ParseError> try_parse(const InputLine& line);
+[[nodiscard]] std::expected<Command, ParseError> try_parse(const InputLine& line);
 
 // Перегрузки для временного объекта удалены: результат разбора пережил бы
 // аргумент. Тот же приём, что и с tokenize, — ошибка закрывается интерфейсом,
 // а не дисциплиной вызывающего.
 Command parse(InputLine&&) = delete;
-Result<Command, ParseError> try_parse(InputLine&&) = delete;
+std::expected<Command, ParseError> try_parse(InputLine&&) = delete;
 
 }  // namespace taskq

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -67,6 +68,10 @@ public:
 
     [[nodiscard]] const std::string& data() const noexcept { return data_; }
 
+    // Этап 5: сериализация, чтобы тип удовлетворял концепции Serializable.
+    [[nodiscard]] std::vector<std::byte> to_bytes() const;
+    [[nodiscard]] static StringValue from_bytes(std::span<const std::byte> bytes);
+
 private:
     std::string data_;
 };
@@ -82,6 +87,9 @@ public:
     [[nodiscard]] bool equals(const IValue& other) const noexcept override;
 
     [[nodiscard]] std::int64_t data() const noexcept { return data_; }
+
+    [[nodiscard]] std::vector<std::byte> to_bytes() const;
+    [[nodiscard]] static IntValue from_bytes(std::span<const std::byte> bytes);
 
 private:
     std::int64_t data_;
