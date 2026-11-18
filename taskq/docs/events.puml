@@ -1,0 +1,15 @@
+@startuml events
+' Этап 10: события — переходы автомата (state.hpp). Каждая стрелка
+' автомата публикует ровно одно событие.
+hide empty description
+
+[*] --> Pending : TaskSubmitted\nSUBMIT / SUBMITBATCH
+Pending --> Leased : TaskLeased\nPOLL
+Pending --> Cancelled : TaskCancelled\nPURGE
+Leased --> Done : TaskCompleted\nACK
+Leased --> Failed : TaskFailed\nFAIL (попытки исчерпаны)
+Leased --> Pending : TaskReturned\nRELEASE, REAP (expired, abandoned),\nFAIL (retry n of m)
+Done --> [*]
+Failed --> [*]
+Cancelled --> [*]
+@enduml

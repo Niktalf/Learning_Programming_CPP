@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.28)
 project(kvs LANGUAGES CXX)
 
-# Этап 6: реестр команд вместо parse и execute — include/kvs/registry.hpp,
-# docs/registry.md.
+# Этап 10: слои — kvs_domain, kvs_application, kvs_infrastructure — и
+# публикация доменных событий в Kafka (docs/layers.md, docs/events.md).
 #
 # С этапа 5 — C++23. На лекции 5 разбирались концепции, ranges, оператор <=>
 # и корутины; вместе с двадцать третьим стандартом приходят std::expected
@@ -33,27 +33,81 @@ FetchContent_Declare(googletest
     GIT_TAG        v1.15.2)
 FetchContent_MakeAvailable(googletest)
 
-add_library(kvs_core
-    src/ivalue.cpp
-    src/value.cpp
-    src/errors.cpp
-    src/log.cpp
-    src/file.cpp
-    src/request_cache.cpp
-    src/server.cpp
-    src/glob.cpp
-    src/bytes.cpp
-    src/lexer.cpp
-    src/commands.cpp
-    src/owning_buffer.cpp
-    src/engines.cpp
-    src/reply.cpp
-    src/compose.cpp)
-target_include_directories(kvs_core PUBLIC include)
-target_link_libraries(kvs_core PRIVATE kvs_warnings)
+# --- Этап 10: слои ----------------------------------------------------------
+#
+# Три библиотеки, зависимости только внутрь (docs/layers.md):
+#
+#   kvs_infrastructure ──► kvs_application ──► kvs_domain
+#        │
+#        └── PRIVATE lab::kafka
+#
+# У каждого слоя свой каталог заголовков, и цель видит только свой и те, что
+# под ним: домену заголовки сервера и движков просто не найти. Пути
+# включения при этом прежние — "kvs/store.hpp", "kvs/server.hpp", — каталог
+# слоя добавляется к поиску, а не к имени.
+#
+# Домен не линкуется ни с чем, кроме стандартной библиотеки; что он
+# действительно собирается и работает один, проверяет kvs_domain_isolated.
+add_library(kvs_domain
+    domain/src/ivalue.cpp
+    domain/src/value.cpp
+    domain/src/errors.cpp
+    domain/src/glob.cpp
+    domain/src/bytes.cpp
+    domain/src/owning_buffer.cpp)
+target_include_directories(kvs_domain PUBLIC domain/include)
+target_link_libraries(kvs_domain PRIVATE kvs_warnings)
 
-add_executable(kvs_cli src/main.cpp)
-target_link_libraries(kvs_cli PRIVATE kvs_core kvs_warnings)
+# Прикладной слой: команды, их разбор, сервер с границей ошибок, порты
+# журнала. Знает домен, не знает ни файлов, ни брокера.
+add_library(kvs_application
+    application/src/request_cache.cpp
+    application/src/server.cpp
+    application/src/lexer.cpp
+    application/src/commands.cpp
+    application/src/reply.cpp)
+target_include_directories(kvs_application PUBLIC application/include)
+target_link_libraries(kvs_application PUBLIC kvs_domain PRIVATE kvs_warnings)
+
+# Инфраструктура: движки, файловый журнал, формат событий, адаптер Kafka и
+# точка сборки. Обёртка брокера — PRIVATE: её заголовок не виден ни одной
+# цели, которая линкуется с инфраструктурой.
+#
+# KVS_KAFKA=OFF собирает проект без обёртки — например, на машине, где она
+# ещё не установлена. Сервер тогда работает без событий, --events отвергается.
+option(KVS_KAFKA "Build the Kafka event publisher and kvs_tail (needs lab_kafka)" ON)
+add_library(kvs_infrastructure
+    infrastructure/src/log.cpp
+    infrastructure/src/file.cpp
+    infrastructure/src/engines.cpp
+    infrastructure/src/event_wire.cpp
+    infrastructure/src/compose.cpp)
+target_include_directories(kvs_infrastructure PUBLIC infrastructure/include)
+target_link_libraries(kvs_infrastructure PUBLIC kvs_application PRIVATE kvs_warnings)
+if(KVS_KAFKA)
+    find_package(lab_kafka QUIET)
+    if(NOT lab_kafka_FOUND)
+        message(FATAL_ERROR "lab_kafka not found. Install it (lab-kafka/install.sh) "
+                            "or configure with -DKVS_KAFKA=OFF to build without events.")
+    endif()
+    target_sources(kvs_infrastructure PRIVATE infrastructure/src/kafka_publisher.cpp)
+    target_link_libraries(kvs_infrastructure PRIVATE lab::kafka)
+    target_compile_definitions(kvs_infrastructure PRIVATE KVS_WITH_KAFKA)
+endif()
+
+# kvs_core — все три слоя одним именем, для тестов и утилит прошлых этапов,
+# которым нужна вся система. Своих исходников у неё нет.
+add_library(kvs_core INTERFACE)
+target_link_libraries(kvs_core INTERFACE kvs_infrastructure)
+
+# Приложения — четвёртый, внешний круг: консольный клиент и подписчик.
+add_executable(kvs_cli app/main.cpp)
+target_link_libraries(kvs_cli PRIVATE kvs_infrastructure kvs_warnings)
+
+if(KVS_KAFKA)
+    add_executable(kvs_tail app/tail.cpp)
+    target_link_libraries(kvs_tail PRIVATE kvs_infrastructure lab::kafka kvs_warnings)
+endif()
 
 enable_testing()
 add_executable(kvs_tests
@@ -86,7 +140,9 @@ add_executable(kvs_tests
     tests/test_hash_tables.cpp
     tests/test_engines.cpp
     tests/test_scan.cpp
-    tests/test_clock.cpp)
+    tests/test_clock.cpp
+    tests/test_events.cpp
+    tests/test_event_wire.cpp)
 target_include_directories(kvs_tests PRIVATE tools tests)
 target_link_libraries(kvs_tests PRIVATE kvs_core kvs_warnings GTest::gtest_main)
 
@@ -129,7 +185,7 @@ target_link_libraries(kvs_error_cost PRIVATE kvs_core kvs_warnings)
 foreach(bench kvs_bench_lists kvs_bench_tables kvs_bench_engines kvs_bench_open kvs_hash_histogram)
     string(REPLACE "kvs_" "" source ${bench})
     add_executable(${bench} bench/${source}.cpp tools/alloc_counter.cpp)
-    target_include_directories(${bench} PRIVATE tools bench include)
+    target_include_directories(${bench} PRIVATE tools bench domain/include infrastructure/include)
     target_link_libraries(${bench} PRIVATE kvs_warnings)
 endforeach()
 
@@ -150,10 +206,44 @@ add_test(NAME kvs_invalidation_detected
                  "-DEXPECT=singular iterator"
                  -P ${CMAKE_SOURCE_DIR}/cmake/expect_runtime_failure.cmake)
 
+# --- Этап 10: проверки слоёв ------------------------------------------------
+#
+# Домен собирается и работает один: программа линкуется только с kvs_domain
+# и подставляет свой движок. Протечка зависимости наружу — ошибка сборки
+# или линковки этой цели.
+add_executable(kvs_domain_isolated tests/isolation/domain_only.cpp)
+target_link_libraries(kvs_domain_isolated PRIVATE kvs_domain kvs_warnings)
+add_test(NAME kvs_domain_isolated COMMAND kvs_domain_isolated)
+
+# Ни слова о брокере в ядре — даже в комментариях.
+add_test(NAME kvs_core_knows_no_broker
+         COMMAND ${CMAKE_COMMAND} -DROOT=${CMAKE_SOURCE_DIR} "-DDIRS=domain;application" -DWORD=kafka
+                 -P ${CMAKE_SOURCE_DIR}/cmake/expect_no_mention.cmake)
+
+# Сквозной тест с брокером — на макете кластера из librdkafka, который
+# поднимается внутри процесса: настоящий протокол, но без Docker. Цель
+# собирается, только если в системе есть rdkafka_mock.h. Модульные тесты
+# (kvs_tests) брокера не требуют вовсе и проходят при остановленном стенде.
+if(KVS_KAFKA)
+    find_path(KVS_RDKAFKA_MOCK_DIR librdkafka/rdkafka_mock.h HINTS ${RDKAFKA_INCLUDE_DIRS})
+    if(KVS_RDKAFKA_MOCK_DIR)
+        add_executable(kvs_kafka_tests tests/test_kafka.cpp)
+        target_include_directories(kvs_kafka_tests PRIVATE tests ${KVS_RDKAFKA_MOCK_DIR})
+        target_link_libraries(kvs_kafka_tests PRIVATE kvs_core lab::kafka PkgConfig::RDKAFKA kvs_warnings
+                                                      GTest::gtest_main)
+    else()
+        message(STATUS "rdkafka_mock.h not found: kvs_kafka_tests is not built")
+    endif()
+endif()
+
 include(GoogleTest)
 gtest_discover_tests(kvs_tests)
 gtest_discover_tests(kvs_alloc_tests)
 gtest_discover_tests(kvs_integration_tests PROPERTIES LABELS integration)
+if(TARGET kvs_kafka_tests)
+    gtest_discover_tests(kvs_kafka_tests PROPERTIES LABELS "integration\\;kafka" TIMEOUT 120
+                         DISCOVERY_TIMEOUT 30)
+endif()
 
 # Этап 8: тот же набор тестов на каждом движке хранилища, без единой правки
 # в тестах. Движок по умолчанию берётся из переменной окружения KVS_ENGINE

@@ -125,6 +125,9 @@ TEST(Lease, ExpiresAndReturnsTask) {
 - **Одна библиотека `taskq_core`** для ядра и адаптеров — удобный
   конструктор `TaskStore()` связывает ядро с фабрикой индекса. Этап 10
   разведёт их.
+  *Этап 10: разведены — `taskq_domain`, `taskq_application`,
+  `taskq_infrastructure`; что осталось от удобного конструктора — в
+  `docs/layers.md`, «Что оставлено».*
 
 ## Звёздочка: граф включений
 
