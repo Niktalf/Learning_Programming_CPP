@@ -74,7 +74,11 @@ add_executable(chat_tests
     tests/test_static_registry.cpp
     tests/test_ring_buffer.cpp
     tests/test_emplace.cpp
-    tests/test_invalidation.cpp)
+    tests/test_invalidation.cpp
+    tests/test_hash_tables.cpp
+    tests/test_engines.cpp
+    tests/test_time_index.cpp
+    tests/test_rooms_page.cpp)
 target_include_directories(chat_tests PRIVATE tests tools)
 target_link_libraries(chat_tests PRIVATE chat_core chat_warnings GTest::gtest_main)
 
@@ -95,13 +99,16 @@ target_link_libraries(chat_alloc_tests PRIVATE chat_core chat_warnings GTest::gt
 
 # Этап 7: замеры контейнеров. Собираются всегда, запускаются руками и только
 # из оптимизированной сборки — цифры отладочной ничего не говорят. Результаты
-# и выводы — docs/benchmarks.md.
-foreach(bench chat_bench_history chat_bench_tables)
+# и выводы — docs/benchmarks.md. Этап 8: замер движков, звёздочка с открытой
+# адресацией и гистограмма хеша ников (docs/hashing.md).
+foreach(bench chat_bench_history chat_bench_tables chat_bench_engines chat_bench_open chat_nick_histogram)
     string(REPLACE "chat_" "" source ${bench})
     add_executable(${bench} bench/${source}.cpp tools/alloc_counter.cpp)
-    target_include_directories(${bench} PRIVATE tools bench)
+    target_include_directories(${bench} PRIVATE tools bench include)
     target_link_libraries(${bench} PRIVATE chat_warnings)
 endforeach()
+# Замер движков идёт через хранилище целиком, а ему нужны исключения из ядра.
+target_link_libraries(chat_bench_engines PRIVATE chat_core)
 
 # Домашнее задание этапа 7: обход участников с удалением внутри цикла.
 # Намеренно неопределённое поведение. Санитайзер адресов его не видит — чтение
@@ -128,6 +135,16 @@ add_test(NAME chat_invalidation_detected
 include(GoogleTest)
 gtest_discover_tests(chat_tests)
 gtest_discover_tests(chat_alloc_tests)
+
+# Этап 8: тот же набор тестов на каждом движке хранилища, без единой правки
+# в тестах. Движок по умолчанию берётся из переменной окружения CHAT_ENGINE
+# (engine.hpp), и ctest запускает набор ещё трижды — на собственной
+# хеш-таблице, на ней же с заведомо плохой хеш-функцией и на открытой
+# адресации. Имена тестов получают приставку движка: hash/Commands.JoinAndWho.
+foreach(engine hash bad-hash open)
+    gtest_discover_tests(chat_tests TEST_PREFIX "${engine}/"
+                         PROPERTIES ENVIRONMENT "CHAT_ENGINE=${engine}")
+endforeach()
 
 # Этап 3, второй путь: цена исключений и std::expected без ошибок и с
 # ошибками. С этапа 6 меряется лексер: разбор команд ушёл в реестр.

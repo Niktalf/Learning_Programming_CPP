@@ -1,8 +1,10 @@
 #include "chat/commands.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <ranges>
@@ -27,14 +29,11 @@ namespace {
     if (text.size() < 3 || text.front() != ':' || text.back() != ':') {
         return false;
     }
-    for (const char c : text.substr(1, text.size() - 2)) {
-        const bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                             (c >= '0' && c <= '9') || c == '_' || c == '+' || c == '-';
-        if (!allowed) {
-            return false;
-        }
-    }
-    return true;
+    // Этап 8: all_of вместо цикла с ранним выходом.
+    return std::ranges::all_of(text.substr(1, text.size() - 2), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' ||
+               c == '+' || c == '-';
+    });
 }
 
 [[nodiscard]] MessagePtr make_message(const std::string& author, std::string_view text) {
@@ -92,6 +91,21 @@ void require_room(const ChatStore& store, std::string_view room) {
     return std::ranges::to<std::string>(lines | std::views::join_with('\n'));
 }
 
+// Строки ответа истории: «номер: <автор> текст», с отметкой времени —
+// «номер @ms: <автор> текст». Этап 8: transform вместо цикла с push_back.
+[[nodiscard]] std::vector<std::string> lines_of(const std::vector<ChatStore::Entry>& entries, bool with_time) {
+    std::vector<std::string> lines;
+    lines.reserve(entries.size());
+    std::ranges::transform(entries, std::back_inserter(lines), [with_time](const ChatStore::Entry& entry) {
+        const IMessage& item = *entry.message.get();
+        if (with_time) {
+            return std::format("{} @{}: <{}> {}", entry.index, item.id().timestamp, item.author(), item.to_string());
+        }
+        return std::format("{}: <{}> {}", entry.index, item.author(), item.to_string());
+    });
+    return lines;
+}
+
 // Запись журнала: комнаты через запятую, автор и текст через табуляцию.
 // Табуляции в тексте быть не может — convert отвергает управляющие символы.
 [[nodiscard]] std::string record_of(const std::string& author, const RoomList& rooms,
@@ -123,9 +137,8 @@ Response leave(Context& call, RoomName room) {
 Response message(Context& call, RoomList rooms, Tail text) {
     // Все проверки — до рассылки: отказ в третьей комнате не должен оставить
     // сообщение в первых двух. Сама рассылка атомарна.
-    for (const std::string_view room : rooms.rooms) {
-        require_member(call.store, room, call.session.nick);
-    }
+    std::ranges::for_each(rooms.rooms,
+                          [&call](std::string_view room) { require_member(call.store, room, call.session.nick); });
     call.store.post_many(rooms.rooms, stamped(call.store, make_message(call.session.nick, text.text)));
     // В журнал — только успешно отправленные сообщения. Если запись не
     // удалась, сообщение уже в истории, а клиент получит ошибку; журнал до
@@ -157,11 +170,31 @@ Response history(Context& call, RoomName room, std::optional<std::size_t> limit,
     if (!selected) {
         throw UnknownRoomError(std::string(room.name));
     }
-    std::vector<std::string> lines;
-    for (const auto& [index, item] : *selected) {
-        lines.push_back(std::format("{}: <{}> {}", index, item.get()->author(), item.get()->to_string()));
+    return ok(joined(lines_of(*selected, false), "(empty)"));
+}
+
+// Этап 8: история по времени. /since #room <ms> [limit] — первые limit
+// сообщений с отметкой не раньше ms; /until #room <ms> [limit] — последние
+// limit сообщений с отметкой не позже ms. Отметка — миллисекунды от эпохи,
+// она печатается в каждой строке ответа: так её можно взять для следующего
+// запроса. Поиск — по индексу по времени, красно-чёрному дереву.
+Response since(Context& call, RoomName room, std::uint64_t moment, std::optional<std::size_t> limit) {
+    const auto selected = call.store.history_between(room.name, moment, std::numeric_limits<std::uint64_t>::max(),
+                                                     limit.value_or(default_history_limit),
+                                                     ChatStore::Window::Earliest);
+    if (!selected) {
+        throw UnknownRoomError(std::string(room.name));
     }
-    return ok(joined(lines, "(empty)"));
+    return ok(joined(lines_of(*selected, true), "(empty)"));
+}
+
+Response until(Context& call, RoomName room, std::uint64_t moment, std::optional<std::size_t> limit) {
+    const auto selected = call.store.history_between(room.name, 0, moment, limit.value_or(default_history_limit),
+                                                     ChatStore::Window::Latest);
+    if (!selected) {
+        throw UnknownRoomError(std::string(room.name));
+    }
+    return ok(joined(lines_of(*selected, true), "(empty)"));
 }
 
 Response type_of(Context& call, RoomName room, std::size_t index) {
@@ -240,15 +273,23 @@ Response kick(Context& call, RoomName room, Nick target) {
     return ok("OK");
 }
 
-// /rooms: все комнаты по алфавиту с числом участников. Алфавитный порядок —
-// свойство std::map, на котором лежат комнаты; на этапе 7 это станет
-// аргументом в выборе между map и unordered_map.
-Response rooms(Context& call) {
+// /rooms [after] [count]: страница комнат по алфавиту с числом живых
+// участников. Этап 8: с курсором. Курсор — имя последней комнаты
+// предыдущей страницы; если за страницей есть ещё, последняя строка ответа
+// подсказывает следующий запрос. Страница — upper_bound по упорядоченному
+// индексу имён и take, число участников — count_if, строки — transform:
+// ни одного ручного цикла.
+Response rooms(Context& call, std::optional<RoomName> after, std::optional<std::size_t> count) {
+    const std::size_t size = count.value_or(default_rooms_page);
+    const auto page = call.store.room_page(after ? std::optional(after->name) : std::nullopt, size);
     std::vector<std::string> lines;
-    call.store.for_each_room([&](const std::string& name, const History&) {
-        const auto members = call.store.members(name);
-        lines.push_back(std::format("{} ({})", name, members ? members->size() : 0));
+    lines.reserve(page.names.size() + 1);
+    std::ranges::transform(page.names, std::back_inserter(lines), [&call](const std::string& name) {
+        return std::format("{} ({})", name, call.store.live_members(name));
     });
+    if (page.more) {
+        lines.push_back(std::format("(more: /rooms {} {})", page.names.back(), size));
+    }
     return ok(joined(lines, "(no rooms)"));
 }
 
@@ -269,7 +310,9 @@ const CommandRegistry<Context>& commands() {
             .register_command("/topic", topic)
             .register_command("/nick", nick)
             .register_command("/kick", kick)
-            .register_command("/rooms", rooms);
+            .register_command("/rooms", rooms)
+            .register_command("/since", since)
+            .register_command("/until", until);
         return table;
     }();
     return registry;

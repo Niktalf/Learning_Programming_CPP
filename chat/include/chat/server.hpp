@@ -28,6 +28,14 @@ public:
     // вызовется, но уже построенное хранилище разрушится корректно.
     explicit Server(const std::filesystem::path& log) : log_(std::in_place, log) {}
 
+    // Этап 8: движок хранилища — параметр запуска (chat_cli --engine=hash).
+    explicit Server(EngineKind engine, const std::optional<std::filesystem::path>& log = std::nullopt)
+        : store_(engine) {
+        if (log) {
+            log_.emplace(*log);
+        }
+    }
+
     // Вход и выход пользователя. Реестр владеет пользователем, пока тот в
     // чате; logout — это то, что на этапе 15 сделает отключение клиента.
     [[nodiscard]] Session login(std::string nick);

@@ -81,7 +81,10 @@ add_executable(kvs_tests
     tests/test_lists.cpp
     tests/test_store_iterator.cpp
     tests/test_emplace.cpp
-    tests/test_invalidation.cpp)
+    tests/test_invalidation.cpp
+    tests/test_hash_tables.cpp
+    tests/test_engines.cpp
+    tests/test_scan.cpp)
 target_include_directories(kvs_tests PRIVATE tools tests)
 target_link_libraries(kvs_tests PRIVATE kvs_core kvs_warnings GTest::gtest_main)
 
@@ -109,10 +112,10 @@ target_link_libraries(kvs_error_cost PRIVATE kvs_core kvs_warnings)
 # Этап 7: замеры контейнеров. Собираются всегда, запускаются руками и только
 # из оптимизированной сборки — цифры отладочной ничего не говорят. Результаты
 # и выводы — docs/benchmarks.md.
-foreach(bench kvs_bench_lists kvs_bench_tables)
+foreach(bench kvs_bench_lists kvs_bench_tables kvs_bench_engines kvs_bench_open kvs_hash_histogram)
     string(REPLACE "kvs_" "" source ${bench})
     add_executable(${bench} bench/${source}.cpp tools/alloc_counter.cpp)
-    target_include_directories(${bench} PRIVATE tools bench)
+    target_include_directories(${bench} PRIVATE tools bench include)
     target_link_libraries(${bench} PRIVATE kvs_warnings)
 endforeach()
 
@@ -136,6 +139,16 @@ add_test(NAME kvs_invalidation_detected
 include(GoogleTest)
 gtest_discover_tests(kvs_tests)
 gtest_discover_tests(kvs_alloc_tests)
+
+# Этап 8: тот же набор тестов на каждом движке хранилища, без единой правки
+# в тестах. Движок по умолчанию берётся из переменной окружения KVS_ENGINE
+# (engine.hpp), и ctest запускает набор ещё трижды — на собственной
+# хеш-таблице, на ней же с заведомо плохой хеш-функцией и на открытой
+# адресации. Имена тестов получают приставку движка: hash/Store.SetGetDelete.
+foreach(engine hash bad-hash open)
+    gtest_discover_tests(kvs_tests TEST_PREFIX "${engine}/"
+                         PROPERTIES ENVIRONMENT "KVS_ENGINE=${engine}")
+endforeach()
 
 # Учебная демонстрация висячего представления. В обычную сборку не входит:
 # программа намеренно обращается к освобождённой памяти. Запускать под

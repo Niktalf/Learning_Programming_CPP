@@ -29,17 +29,13 @@ std::shared_ptr<const Request> RequestCache::get(const std::string& text) {
     return created;
 }
 
+// Этап 8: удаление по условию — std::erase_if из C++20 вместо цикла с
+// it = erase(it). Для ассоциативных контейнеров erase-remove неприменим:
+// remove_if переставляет элементы, а ключи std::map переставлять нельзя;
+// erase_if делает правильное для каждого контейнера и возвращает, сколько
+// удалено.
 std::size_t RequestCache::purge() {
-    std::size_t removed = 0;
-    for (auto it = entries_.begin(); it != entries_.end();) {
-        if (it->second.expired()) {
-            it = entries_.erase(it);
-            ++removed;
-        } else {
-            ++it;
-        }
-    }
-    return removed;
+    return std::erase_if(entries_, [](const auto& entry) { return entry.second.expired(); });
 }
 
 }  // namespace kvs

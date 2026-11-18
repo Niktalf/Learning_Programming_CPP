@@ -1,5 +1,6 @@
 #include "kvs/commands.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -78,8 +79,13 @@ Response delete_key(Store& store, std::string_view key) {
     return ok("OK");
 }
 
-Response exists(Store& store, std::string_view key) {
-    return ok(store.contains(key) ? "1" : "0");
+// EXISTS key [key ...]: сколько из названных ключей есть в хранилище, как в
+// Redis. Этап 8: подсчёт — count_if, а не цикл со счётчиком. Повтор ключа
+// считается повторно — тоже как в Redis.
+Response exists(Store& store, std::string_view first, Rest more) {
+    const auto present = [&store](std::string_view key) { return store.contains(key); };
+    const auto count = (present(first) ? 1 : 0) + std::ranges::count_if(more.tokens, present);
+    return ok(std::to_string(count));
 }
 
 Response type_of(Store& store, std::string_view key) {
@@ -112,13 +118,15 @@ Response set_many(Store& store, Rest tokens) {
     }
     std::vector<std::pair<std::string, Value>> pairs;
     pairs.reserve(tokens.tokens.size() / 2);
-    for (std::size_t i = 0; i < tokens.tokens.size(); i += 2) {
+    // Этап 8: views::chunk(2) из C++23 режет токены на пары — вместо
+    // индекса с шагом 2.
+    for (const auto pair : tokens.tokens | std::views::chunk(2)) {
         // Этап 7: emplace_back из двух string_view, а не из временных
         // std::string и Value. С временными пара строилась бы из них
         // перемещением — ещё два объекта и два перемещения на каждую пару;
         // так строка и значение рождаются прямо в элементе вектора
         // (tests/test_emplace.cpp показывает разницу на Traced).
-        pairs.emplace_back(tokens.tokens[i], tokens.tokens[i + 1]);
+        pairs.emplace_back(pair[0], pair[1]);
     }
     store.mset(pairs);
     return ok("OK");
@@ -229,6 +237,36 @@ Response list_keys(Store& store, std::optional<std::string_view> pattern,
     return ok(std::ranges::to<std::string>(keys | std::views::join_with('\n')));
 }
 
+// --- Этап 8: SCAN и KEYSRANGE --------------------------------------------
+
+// SCAN cursor [pattern] [count]: первая строка ответа — курсор следующей
+// страницы, 0 — конец обхода; дальше — ключи страницы. count — сколько
+// корзин посмотреть за вызов, по умолчанию 10.
+Response scan_keys(Store& store, std::size_t cursor, std::optional<std::string_view> pattern,
+                   std::optional<std::size_t> count) {
+    const auto page = store.scan_page(cursor, count.value_or(10), pattern.value_or("*"));
+    // Курсор — первой строкой, ключи — следующими: курсор впереди всего
+    // диапазона, и склейка — join_with.
+    const std::string cursor_line = std::format("{}", page.next_cursor);
+    const std::vector<std::string_view> lines = [&] {
+        std::vector<std::string_view> all{cursor_line};
+        all.insert(all.end(), page.keys.begin(), page.keys.end());
+        return all;
+    }();
+    return ok(std::ranges::to<std::string>(lines | std::views::join_with('\n')));
+}
+
+// KEYSRANGE from to [limit]: ключи от from до to включительно в порядке
+// строк — по упорядоченному индексу.
+Response keys_range(Store& store, std::string_view from, std::string_view to,
+                    std::optional<std::size_t> limit) {
+    const std::vector<std::string> keys = store.keys_range(from, to, limit.value_or(default_keys_limit));
+    if (keys.empty()) {
+        return ok("(empty)");
+    }
+    return ok(std::ranges::to<std::string>(keys | std::views::join_with('\n')));
+}
+
 Response version_of(Store& store, std::string_view key) {
     const auto version = store.version(key);
     if (!version) {
@@ -285,6 +323,8 @@ const CommandRegistry<Store>& commands() {
             .add("LRANGE", Effect::Reads, list_range)
             .add("LLEN", Effect::Reads, list_length)
             .add("KEYS", Effect::Reads, list_keys)
+            .add("SCAN", Effect::Reads, scan_keys)
+            .add("KEYSRANGE", Effect::Reads, keys_range)
             .add("VERSION", Effect::Reads, version_of)
             .add("APPEND", Effect::Writes, append)
             .add("STRLEN", Effect::Reads, string_length)

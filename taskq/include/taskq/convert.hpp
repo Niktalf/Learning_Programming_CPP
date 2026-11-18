@@ -55,6 +55,15 @@ struct Limit {
     std::size_t value;
 };
 
+// Этап 8: курсор LIST — ключ выдачи последней задачи предыдущей страницы,
+// «приоритет.номер постановки»: after=9.17. LIST печатает его сам в
+// подсказке о следующей странице.
+struct After {
+    static constexpr std::string_view prefix = "after=";
+    int priority;
+    std::uint64_t seq;
+};
+
 // Маркер «весь остаток строки»: тело SUBMIT. Остаток не разбивается на
 // токены и не разбирает кавычки — echo "hi уходит как есть. Только
 // последним параметром.
@@ -107,7 +116,7 @@ template <class T>
 concept ScalarArgument =
     std::same_as<T, std::string_view> || std::same_as<T, QueueName> || std::same_as<T, WorkerName> ||
     std::same_as<T, Priority> || std::same_as<T, MinPriority> || std::same_as<T, Kind> ||
-    std::same_as<T, Limit> || std::same_as<T, std::chrono::seconds> ||
+    std::same_as<T, Limit> || std::same_as<T, After> || std::same_as<T, std::chrono::seconds> ||
     (std::is_arithmetic_v<T> && !std::same_as<T, bool>);
 
 // Необязательным может быть только скалярный аргумент. Tail обязателен по
@@ -180,6 +189,14 @@ template <ScalarArgument T>
             detail::reject("limit must be a non-negative number: " + std::string(token), token);
         }
         return Limit{*value};
+    } else if constexpr (std::is_same_v<T, After>) {
+        const std::size_t dot = token.find('.');
+        const auto priority = dot == std::string_view::npos ? std::nullopt : detail::number<int>(token.substr(0, dot));
+        const auto seq = dot == std::string_view::npos ? std::nullopt : detail::number<std::uint64_t>(token.substr(dot + 1));
+        if (!priority || !seq || *priority < 0 || *priority > max_priority) {
+            detail::reject("cursor must be like 9.17 (priority.sequence): " + std::string(token), token);
+        }
+        return After{*priority, *seq};
     } else if constexpr (std::is_same_v<T, std::chrono::seconds>) {
         // Задержка DELAY: число с необязательной единицей — 90, 90s, 15m, 2h.
         const char unit = token.empty() ? '\0' : token.back();
@@ -237,6 +254,8 @@ template <class T>
         return "type=text|number|binary";
     } else if constexpr (std::is_same_v<T, Limit>) {
         return "limit=N";
+    } else if constexpr (std::is_same_v<T, After>) {
+        return "after=P.S";
     } else if constexpr (std::is_same_v<T, std::chrono::seconds>) {
         return "delay";
     } else if constexpr (std::is_same_v<T, Tail>) {

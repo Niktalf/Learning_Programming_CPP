@@ -7,11 +7,13 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "taskq/convert.hpp"
+#include "taskq/engine.hpp"
 #include "taskq/log.hpp"
 #include "taskq/registry.hpp"
 #include "taskq/state.hpp"
@@ -32,6 +34,15 @@ inline constexpr std::size_t default_list_limit = 20;
 class Service {
 public:
     Service() = default;
+
+    // Этап 8: движок индекса задач по номеру — параметр запуска
+    // (taskq_cli --engine=hash).
+    explicit Service(EngineKind engine, const std::optional<std::filesystem::path>& log = std::nullopt)
+        : store_(engine) {
+        if (log) {
+            log_.emplace(*log);
+        }
+    }
 
     // С журналом переходов: каждый переход состояния дописывается в файл
     // строкой «номер<TAB>из<TAB>в». По журналу видно, что случилось с
@@ -60,6 +71,12 @@ public:
     using Clock = std::function<Timestamp()>;
     void set_clock(Clock clock) { clock_ = std::move(clock); }
 
+    // Этап 8: срок аренды. Задача, выданная POLL, должна быть подтверждена
+    // (ACK, FAIL) или возвращена (RELEASE) за это время; иначе REAP вернёт её
+    // в очередь. Поиск истёкших аренд — по индексу по сроку, без перебора.
+    static constexpr std::chrono::seconds default_lease_timeout{300};
+    void set_lease_timeout(std::chrono::seconds timeout) noexcept { lease_timeout_ = timeout; }
+
 private:
     // Выданная задача помнит очередь, из которой пришла, — возврат аренды
     // ставит её обратно туда же, — и держателя аренды.
@@ -67,7 +84,7 @@ private:
     // Держатель — weak_ptr: задача не удерживает воркера в живых. Исчез
     // воркер — weak_ptr истёк, и задача брошена. Это второе, более быстрое
     // основание для возврата задачи: не ждать истечения срока аренды (он
-    // появится на этапе 11), а увидеть, что держатель пропал.
+    // есть с этапа 8, expires), а увидеть, что держатель пропал.
     //
     // Пустой optional — анонимная аренда, POLL без имени воркера.
     struct Lease {
@@ -75,6 +92,7 @@ private:
         std::string queue;
         std::optional<std::weak_ptr<Worker>> holder;
         std::string holder_name;   // имя остаётся, даже когда воркера уже нет
+        Timestamp expires{};       // этап 8: срок аренды, ключ в lease_deadlines_
 
         [[nodiscard]] bool abandoned() const noexcept { return holder && holder->expired(); }
     };
@@ -97,7 +115,7 @@ private:
     Response gone(WorkerName worker);
     Response reap();
     Response list(QueueName queue, std::optional<MinPriority> min_priority, std::optional<Kind> kind,
-                  std::optional<Limit> limit) const;
+                  std::optional<Limit> limit, std::optional<After> after) const;
 
     // Домашнее задание этапа 6.
     Response delay(TaskId id, std::chrono::seconds by);
@@ -109,6 +127,10 @@ private:
 
     // Возврат аренды в очередь: Leased -> Pending. Общий для RELEASE и REAP.
     void return_lease(TaskId id);
+
+    // Конец аренды — запись уходит и из leases_, и из индекса по сроку. Не
+    // бросает: удаление по ключу из двух деревьев.
+    void end_lease(TaskId id) noexcept;
 
     // Запись перехода в журнал, если он ведётся.
     void record(TaskId id, std::string_view from, State to);
@@ -126,6 +148,11 @@ private:
 
     TaskStore store_;
     std::map<TaskId, Lease> leases_;
+    // Этап 8: индекс аренд по сроку — красно-чёрное дерево пар «когда
+    // истекает, номер». Истёкшие аренды — начало дерева до now, без перебора
+    // всех аренд. На этапе 11 его будет опрашивать фоновый сборщик.
+    std::set<std::pair<Timestamp, TaskId>> lease_deadlines_;
+    std::chrono::seconds lease_timeout_ = default_lease_timeout;
     std::map<TaskId, State> states_;
 
     // Реестр воркеров владеет ими; аренды только наблюдают.

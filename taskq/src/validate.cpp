@@ -1,5 +1,6 @@
 #include "taskq/validate.hpp"
 
+#include <algorithm>
 #include <string>
 
 namespace taskq {
@@ -74,11 +75,13 @@ namespace {
     if (name.front() == ' ' || name.back() == ' ') {
         return what + " starts or ends with a space";
     }
-    for (const char c : name) {
+    // Этап 8: any_of вместо цикла с ранним выходом.
+    const auto is_control = [](char c) {
         const auto byte = static_cast<unsigned char>(c);
-        if (byte < 0x20 || byte == 0x7F) {
-            return what + " contains control characters";
-        }
+        return byte < 0x20 || byte == 0x7F;
+    };
+    if (std::ranges::any_of(name, is_control)) {
+        return what + " contains control characters";
     }
     return std::nullopt;
 }

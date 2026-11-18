@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <utility>
 
@@ -48,6 +49,10 @@ public:
     const std::string& str() const noexcept { return data_; }
 
     static void reset() noexcept { copy_counter() = 0; move_counter() = 0; }
+
+    // Этап 8: элемент истории обязан сообщать отметку времени (HistoryItem).
+    // Тестам копирований время не нужно — все элементы в одной миллисекунде.
+    friend std::uint64_t timestamp_of(const Tracked&) noexcept { return 0; }
     static int copies() noexcept { return copy_counter(); }
     static int moves() noexcept { return move_counter(); }
 

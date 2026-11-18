@@ -309,7 +309,7 @@ TEST(Commands, UsageComesFromTheSignature) {
     EXPECT_EQ(usage_for("REAP now"), std::string("usage: REAP"));
     EXPECT_EQ(usage_for("DELAY 1"), std::string("usage: DELAY <id> <delay>"));
     EXPECT_EQ(usage_for("LIST"),
-              std::string("usage: LIST <queue> [prio>=0..9] [type=text|number|binary] [limit=N]"));
+              std::string("usage: LIST <queue> [prio>=0..9] [type=text|number|binary] [limit=N] [after=P.S]"));
     EXPECT_EQ(usage_for("SUBMITBATCH"),
               std::string("usage: SUBMITBATCH <queue> [prio=0..9] <body> ..."));
 }
@@ -331,7 +331,8 @@ TEST(Commands, NamedArgumentsInAnyOrder) {
     run(service, "SUBMIT build a");
     run(service, "SUBMIT build prio=5 b");
     run(service, "SUBMIT build prio=5 num:1");
-    const std::string expected = "id=2 prio=5 b";
+    // Этап 8: за страницей есть ещё — последняя строка подсказывает курсор.
+    const std::string expected = "id=2 prio=5 b\n(more: after=5.2)";
     EXPECT_EQ(run(service, "LIST build prio>=5 limit=1").text, expected);
     EXPECT_EQ(run(service, "LIST build limit=1 prio>=5").text, expected);
     EXPECT_EQ(run(service, "LIST build type=number").text, std::string("id=3 prio=5 1"));

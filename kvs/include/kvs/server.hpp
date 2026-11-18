@@ -24,6 +24,7 @@ public:
     struct Options {
         std::optional<std::size_t> memory_limit;     // --maxmemory
         std::optional<std::filesystem::path> log;    // --log
+        EngineKind engine = default_engine_kind();   // --engine, этап 8
     };
 
     Server() : Server(Options{}) {}

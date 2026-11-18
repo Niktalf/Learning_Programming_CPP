@@ -81,14 +81,14 @@ TEST(List, CommandWithNamedArguments) {
     // Этап 7: LIST показывает очередь в порядке выдачи — так, как её
     // увидит POLL: prio=9, prio=8, prio=7, затем prio=0.
     EXPECT_EQ(taskq::handle(service, "LIST build limit=2").text,
-              std::string("id=4 prio=9 test\nid=3 prio=8 2"));
+              std::string("id=4 prio=9 test\nid=3 prio=8 2\n(more: after=8.3)"));
     EXPECT_EQ(taskq::handle(service, "LIST build type=binary").text, std::string("(empty)"));
     EXPECT_EQ(taskq::handle(service, "LIST build prio>=10").text,
               std::string("ERR priority must be 0..9: 10 (usage: LIST <queue> [prio>=0..9] "
-                          "[type=text|number|binary] [limit=N])"));
+                          "[type=text|number|binary] [limit=N] [after=P.S])"));
     // С этапа 6 именованные аргументы разбирает реестр: повтор — лишний
     // аргумент, и подсказка выводится из сигнатуры Service::list.
     EXPECT_EQ(taskq::handle(service, "LIST build limit=1 limit=2").text,
               std::string("ERR unexpected argument: limit=2 (usage: LIST <queue> [prio>=0..9] "
-                          "[type=text|number|binary] [limit=N])"));
+                          "[type=text|number|binary] [limit=N] [after=P.S])"));
 }

@@ -36,4 +36,7 @@ struct Context {
 
 constexpr std::size_t default_history_limit = 10;
 
+// Этап 8: сколько комнат на странице /rooms без явного count.
+constexpr std::size_t default_rooms_page = 50;
+
 }  // namespace chat

@@ -1,5 +1,6 @@
 #include "chat/validate.hpp"
 
+#include <algorithm>
 #include <string>
 
 namespace chat {
@@ -23,10 +24,9 @@ namespace {
         return std::string(what) + " is longer than " + std::to_string(max_name_length) +
                " characters";
     }
-    for (const char c : name) {
-        if (!is_name_char(c)) {
-            return std::string(what) + " may contain only letters, digits, _ and -";
-        }
+    // Этап 8: all_of вместо цикла с ранним выходом.
+    if (!std::ranges::all_of(name, is_name_char)) {
+        return std::string(what) + " may contain only letters, digits, _ and -";
     }
     return std::nullopt;
 }
@@ -99,11 +99,12 @@ std::optional<std::string> text_problem(std::string_view text) {
     if (text.find_first_not_of(' ') == std::string_view::npos) {
         return std::string("text is empty");
     }
-    for (const char c : text) {
+    const auto is_control = [](char c) {
         const auto byte = static_cast<unsigned char>(c);
-        if (byte < 0x20 || byte == 0x7F) {
-            return std::string("text contains control characters");
-        }
+        return byte < 0x20 || byte == 0x7F;
+    };
+    if (std::ranges::any_of(text, is_control)) {
+        return std::string("text contains control characters");
     }
     return std::nullopt;
 }

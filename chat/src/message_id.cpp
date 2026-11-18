@@ -1,5 +1,7 @@
 #include "chat/message_id.hpp"
 
+#include <algorithm>
+#include <iterator>
 #include <string>
 
 #include "chat/errors.hpp"
@@ -26,9 +28,7 @@ std::vector<std::byte> MessageId::to_bytes() const {
     put_u64(out, seq);
     put_u64(out, timestamp);
     put_u64(out, author.size());
-    for (const char c : author) {
-        out.push_back(static_cast<std::byte>(c));
-    }
+    std::ranges::transform(author, std::back_inserter(out), [](char c) { return static_cast<std::byte>(c); });
     return out;
 }
 

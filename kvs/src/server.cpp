@@ -1,5 +1,6 @@
 #include "kvs/server.hpp"
 
+#include <algorithm>
 #include <exception>
 #include <memory>
 #include <new>
@@ -45,13 +46,13 @@ namespace {
     }
 }
 
-[[nodiscard]] Store make_store(const std::optional<std::size_t>& limit) {
-    return limit ? Store(*limit) : Store();
+[[nodiscard]] Store make_store(const std::optional<std::size_t>& limit, EngineKind engine) {
+    return limit ? Store(*limit, engine) : Store(engine);
 }
 
 }  // namespace
 
-Server::Server(const Options& options) : store_(make_store(options.memory_limit)) {
+Server::Server(const Options& options) : store_(make_store(options.memory_limit, options.engine)) {
     if (!options.log) {
         return;
     }
@@ -101,10 +102,11 @@ Response Server::handle(std::string line) {
         // есть, приписывается в скобках: «ERR no such key: k (while executing
         // GET k)». Клиенту видно и что случилось, и на какой команде.
         const std::exception_ptr error = std::current_exception();
-        std::string text = "ERR " + reason_of(root_cause(error));
-        for (const std::string& step : context_of(error)) {
-            text += " (" + step + ")";
-        }
+        // Этап 8: свёртка вместо цикла — каждое звено дописывается к ответу.
+        std::string text = std::ranges::fold_left(context_of(error), "ERR " + reason_of(root_cause(error)),
+                                                  [](std::string acc, const std::string& step) {
+                                                      return std::move(acc) + " (" + step + ")";
+                                                  });
         return Response{false, std::move(text)};
     }
 }

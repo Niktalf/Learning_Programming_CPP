@@ -319,7 +319,7 @@ TEST(Commands, ArityErrorIsUsageFromTheSignature) {
     EXPECT_EQ(reason_for("/history"), std::string("usage: /history <#room> [number] [nick]"));
     EXPECT_EQ(reason_for("/react #a"), std::string("usage: /react <#room> <number> [number]"));
     EXPECT_EQ(reason_for("/nick a b"), std::string("usage: /nick <nick>"));
-    EXPECT_EQ(reason_for("/rooms extra"), std::string("usage: /rooms"));
+    EXPECT_EQ(reason_for("/rooms #a 5 extra"), std::string("usage: /rooms [#room] [number]"));
     // Многословная тема без кавычек — больше токенов, чем у /topic параметров.
     EXPECT_EQ(reason_for("/topic #general обсуждаем курс"),
               std::string(R"(usage: /topic <#room> ["text"])"));

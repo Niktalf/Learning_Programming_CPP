@@ -4,6 +4,8 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <new>
 #include <string>
@@ -42,6 +44,9 @@ public:
 
     [[nodiscard]] const std::string& text() const noexcept { return text_; }
 
+    // Время элементу этих тестов не нужно (HistoryItem требует его с этапа 8).
+    friend std::uint64_t timestamp_of(const ThrowOnNthCopy&) noexcept { return 0; }
+
 private:
     static void tick() {
         if (countdown() > 0 && --countdown() == 0) {
@@ -77,6 +82,19 @@ std::vector<std::size_t> sizes(const Store& store) {
     return result;
 }
 
+// Этап 8: сколько записей в индексе по времени у каждой комнаты. Окно — всё
+// время, предел — без ограничения. Индекс обязан совпадать с историей.
+std::vector<std::size_t> indexed(const Store& store) {
+    std::vector<std::size_t> result;
+    for (const std::string_view room : five_rooms()) {
+        result.push_back(store
+                             .history_between(room, 0, std::numeric_limits<std::uint64_t>::max(),
+                                              std::numeric_limits<std::size_t>::max(), Store::Window::Earliest)
+                             ->size());
+    }
+    return result;
+}
+
 }  // namespace
 
 TEST(Guarantee, PostManyIsAllOrNothing) {
@@ -101,6 +119,8 @@ TEST(Guarantee, PostManyIsAllOrNothing) {
         // Ни в одну комнату ничего не добавилось — даже в первые, чья копия
         // уже была готова к моменту броска.
         EXPECT_EQ(sizes(store), std::vector<std::size_t>(5, 1)) << "copy " << nth;
+        // Этап 8: и в индексе по времени — ни одной лишней записи.
+        EXPECT_EQ(indexed(store), sizes(store)) << "copy " << nth;
     }
 
     // Пятого копирования нет: перебор выше покрыл все точки броска.
@@ -109,6 +129,7 @@ TEST(Guarantee, PostManyIsAllOrNothing) {
     EXPECT_NO_THROW(store.post_many(five_rooms(), ThrowOnNthCopy("new")));
     countdown() = -1;
     EXPECT_EQ(sizes(store), std::vector<std::size_t>(5, 2));
+    EXPECT_EQ(indexed(store), sizes(store));
 }
 
 TEST(Guarantee, UnknownRoomInTheMiddleChangesNothing) {

@@ -1,5 +1,7 @@
 #include "taskq/task_key.hpp"
 
+#include <algorithm>
+#include <iterator>
 #include <string>
 
 #include "taskq/errors.hpp"
@@ -27,9 +29,7 @@ std::vector<std::byte> TaskKey::to_bytes() const {
     put_u64(out, static_cast<std::uint64_t>(static_cast<std::int64_t>(priority)));
     put_u64(out, seq);
     put_u64(out, requester.size());
-    for (const char c : requester) {
-        out.push_back(static_cast<std::byte>(c));
-    }
+    std::ranges::transform(requester, std::back_inserter(out), [](char c) { return static_cast<std::byte>(c); });
     return out;
 }
 

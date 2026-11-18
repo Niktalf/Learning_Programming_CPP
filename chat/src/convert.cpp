@@ -17,7 +17,7 @@ RoomList split_rooms(std::string_view list) {
             throw ParseError(*problem, std::string(list));
         }
         // Одна комната дважды — ошибка ввода, а не повод отправить дважды.
-        if (std::ranges::find(result.rooms, room) != result.rooms.end()) {
+        if (std::ranges::contains(result.rooms, room)) {
             throw ParseError("room listed twice: " + std::string(room), std::string(list));
         }
         result.rooms.push_back(room);

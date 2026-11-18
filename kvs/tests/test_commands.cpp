@@ -62,6 +62,15 @@ TEST(Commands, ExistsReportsPresence) {
     EXPECT_EQ(run(store, "EXISTS k").text, std::string("1"));
 }
 
+TEST(Commands, ExistsCountsEveryNamedKey) {
+    // Этап 8: EXISTS с несколькими ключами — count_if по аргументам.
+    Store store;
+    static_cast<void>(run(store, "MSET a 1 b 2"));
+    EXPECT_EQ(run(store, "EXISTS a b c").text, std::string("2"));
+    EXPECT_EQ(run(store, "EXISTS a a").text, std::string("2"));
+    EXPECT_EQ(run(store, "EXISTS z").text, std::string("0"));
+}
+
 TEST(Commands, TypeReportsAlternative) {
     Store store;
     run(store, "SET s text");

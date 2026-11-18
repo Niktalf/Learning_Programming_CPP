@@ -1,9 +1,11 @@
 #include "taskq/service.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cstdint>
 #include <exception>
 #include <format>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -150,9 +152,10 @@ Response Service::submit_all(const std::vector<Batch::Item>& items) {
     // тела на каждый SUBMIT ради вектора, который тут же уничтожался.
     store_.submit_batch(std::move(tasks));
     states_.merge(added);
-    for (TaskId submitted = next_id_; submitted < id; ++submitted) {
+    // Этап 8: iota вместо цикла со счётчиком — номера новых задач подряд.
+    std::ranges::for_each(std::views::iota(next_id_, id), [this](TaskId submitted) {
         record(submitted, "-", State::Pending);
-    }
+    });
 
     const TaskId first = next_id_;
     next_id_ = id;
@@ -181,6 +184,11 @@ Response Service::poll(QueueName queue, std::optional<WorkerName> holder) {
     // Одно «сейчас» на всю команду: между front_id и take время не должно
     // сдвинуться так, чтобы выбор поменялся.
     const Timestamp now = clock_();
+    // Этап 8: отложенные задачи, которым пора, — обратно в очереди. До
+    // подготовки аренды: возврат может бросить (вставка в дерево), и тогда
+    // аренды ещё нет, а каждая задача — в очереди или в индексе по сроку,
+    // где take её тоже видит. Нет очереди — бросит front_id ниже.
+    store_.promote_due(now);
     const auto id = store_.front_id(queue.name, now);   // нет очереди — UnknownQueueError
     if (!id) {
         return Response{true, "(empty)"};   // пустая очередь — не ошибка
@@ -194,7 +202,17 @@ Response Service::poll(QueueName queue, std::optional<WorkerName> holder) {
         prepared.holder = std::weak_ptr<Worker>(worker);
         prepared.holder_name = worker->name();
     }
+    prepared.expires = now + lease_timeout_;
     const auto slot = leases_.try_emplace(*id, std::move(prepared)).first;
+    // Этап 8: узел индекса аренд по сроку — тоже в подготовке. Если его
+    // выделение бросит, подготовленное место в leases_ убирается (erase по
+    // итератору не бросает), и очередь не тронута.
+    try {
+        lease_deadlines_.emplace(slot->second.expires, *id);
+    } catch (...) {
+        leases_.erase(slot);
+        throw;
+    }
 
     // Фиксация: ни одна операция ниже не бросает.
     slot->second.task = std::move(*store_.take(queue.name, now));
@@ -211,29 +229,56 @@ void Service::return_lease(TaskId id) {
     require_transition(id, State::Pending);
     const auto lease = leases_.find(id);
     store_.submit(lease->second.queue, lease->second.task);
-    leases_.erase(lease);
+    end_lease(id);
     transition_to(id, State::Pending);
     record(id, name(State::Leased), State::Pending);
 }
 
-// Возврат брошенных задач — тех, чей держатель исчез. На этапе 11 то же
-// самое будет делать фоновый сборщик, вместе с проверкой срока аренды.
+void Service::end_lease(TaskId id) noexcept {
+    const auto lease = leases_.find(id);
+    if (lease == leases_.end()) {
+        return;
+    }
+    lease_deadlines_.erase({lease->second.expires, id});
+    leases_.erase(lease);
+}
+
+// Сборщик: возврат брошенных задач — тех, чей держатель исчез, — и, с
+// этапа 8, задач с истёкшей арендой; заодно возврат в очереди отложенных
+// задач, которым пора. На этапе 11 то же самое будет делать фоновый
+// сборщик.
+//
+// Истёкшие аренды — не перебор: начало индекса по сроку до now, upper_bound
+// за O(log n) и k нужных записей. Брошенные — перебор всех аренд: брошенность
+// не время, её индекс по сроку не знает (этап 11 будет отмечать её в момент
+// GONE).
+//
+// Задача может быть и брошенной, и просроченной — список собирается из двух
+// и очищается от повторов идиомой erase-remove: sort, затем unique сдвигает
+// уникальные в начало, erase убирает хвост.
 //
 // Каждая задача возвращается с сильной гарантией, а вся операция — с
 // базовой: если на пятой задаче кончится память, первые четыре уже в
 // очередях, и это корректное состояние — каждая задача либо в очереди,
 // либо в аренде, и ни одна не потеряна.
 Response Service::reap() {
-    std::vector<TaskId> abandoned;
-    for (const auto& [id, lease] : leases_) {
-        if (lease.abandoned()) {
-            abandoned.push_back(id);
-        }
+    const Timestamp now = clock_();
+    std::vector<TaskId> returned = std::ranges::to<std::vector<TaskId>>(
+        std::ranges::subrange(lease_deadlines_.begin(),
+                              lease_deadlines_.upper_bound({now, std::numeric_limits<TaskId>::max()})) |
+        std::views::values);
+    std::ranges::copy(leases_ | std::views::filter([](const auto& entry) { return entry.second.abandoned(); }) |
+                          std::views::keys,
+                      std::back_inserter(returned));
+    std::ranges::sort(returned);
+    returned.erase(std::ranges::unique(returned).begin(), returned.end());
+    std::ranges::for_each(returned, [this](TaskId id) { return_lease(id); });
+    const std::size_t promoted = store_.promote_due(now);
+    std::string text = "OK returned=" + std::to_string(returned.size());
+    if (promoted != 0) {
+        text += ", promoted=" + std::to_string(promoted);
     }
-    for (const TaskId id : abandoned) {
-        return_lease(id);
-    }
-    return Response{true, "OK returned=" + std::to_string(abandoned.size())};
+    return Response{true, std::move(text)};
 }
 
 void Service::record(TaskId id, std::string_view from, State to) {
@@ -262,7 +307,7 @@ Response Service::submit_batch(Batch batch) {
 
 Response Service::ack(TaskId id) {
     require_transition(id, State::Done);
-    leases_.erase(id);
+    end_lease(id);
     transition_to(id, State::Done);
     record(id, name(State::Leased), State::Done);
     return Response{true, "OK"};
@@ -270,7 +315,7 @@ Response Service::ack(TaskId id) {
 
 Response Service::fail(TaskId id) {
     require_transition(id, State::Failed);
-    leases_.erase(id);
+    end_lease(id);
     transition_to(id, State::Failed);
     record(id, name(State::Leased), State::Failed);
     return Response{true, "OK"};
@@ -363,22 +408,33 @@ Response Service::gone(WorkerName worker) {
     return Response{true, "OK"};
 }
 
-// LIST <queue> [prio>=N] [type=K] [limit=N]: три именованных необязательных
-// подряд — реестр принимает их в любом порядке.
-Response Service::list(QueueName queue, std::optional<MinPriority> min_priority,
-                       std::optional<Kind> kind, std::optional<Limit> limit) const {
-    const auto tasks = store_.tasks_where(
+// LIST <queue> [prio>=N] [type=K] [limit=N] [after=P.S]: четыре именованных
+// необязательных подряд — реестр принимает их в любом порядке.
+//
+// Этап 8: с курсором. Если за страницей есть ещё задачи, последняя строка
+// ответа — подсказка со следующим курсором: «(more: after=9.17)».
+// Отложенные задачи LIST не показывает — их нет в очереди, они в индексе по
+// сроку; о них говорит STATUS.
+Response Service::list(QueueName queue, std::optional<MinPriority> min_priority, std::optional<Kind> kind,
+                       std::optional<Limit> limit, std::optional<After> after) const {
+    const auto page = store_.list_page(
         queue.name, min_priority ? min_priority->value : 0,
         [&kind](const Task& task) { return !kind || task.type_name() == kind->name; },
-        limit ? limit->value : default_list_limit);
-    if (tasks.empty()) {
+        limit ? limit->value : default_list_limit,
+        after ? std::optional(TaskKey{after->priority, after->seq, std::string()}) : std::nullopt);
+    if (page.tasks.empty()) {
         return Response{true, "(empty)"};
     }
     // transform превращает задачи в строки прямо в конвейере, join_with
     // склеивает их без ручного счёта разделителей.
-    auto lines = tasks | std::views::transform([](const Task& task) { return line_of(task); }) |
-                 std::views::join_with('\n');
-    return Response{true, std::ranges::to<std::string>(lines)};
+    std::string text = std::ranges::to<std::string>(
+        page.tasks | std::views::transform([](const Task& task) { return line_of(task); }) |
+        std::views::join_with('\n'));
+    if (page.more) {
+        const Task& last = page.tasks.back();
+        text += std::format("\n(more: after={}.{})", last.priority(), last.sequence());
+    }
+    return Response{true, std::move(text)};
 }
 
 // --- Домашнее задание этапа 6 -------------------------------------------
@@ -406,18 +462,14 @@ Response Service::delay(TaskId id, std::chrono::seconds by) {
 // transition_to (не бросает). Запись в журнал — после фиксации, как и у
 // остальных команд.
 Response Service::purge(QueueName queue) {
-    // Этап 7: обход одной очереди — её представлением, в порядке выдачи.
-    // Нет очереди — view бросает UnknownQueueError.
-    for (const Task& task : store_.view(queue.name)) {
-        require_transition(task.id(), State::Cancelled);
-    }
+    // Этап 8: ожидающие — это и готовые, и отложенные (pending_ids). Нет
+    // очереди — UnknownQueueError. Проверки и фиксация — for_each.
+    std::ranges::for_each(store_.pending_ids(queue.name),
+                          [this](TaskId id) { require_transition(id, State::Cancelled); });
     const std::vector<Task> removed = store_.purge(queue.name);
-    for (const Task& task : removed) {
-        transition_to(task.id(), State::Cancelled);
-    }
-    for (const Task& task : removed) {
-        record(task.id(), name(State::Pending), State::Cancelled);
-    }
+    std::ranges::for_each(removed, [this](const Task& task) { transition_to(task.id(), State::Cancelled); });
+    std::ranges::for_each(removed,
+                          [this](const Task& task) { record(task.id(), name(State::Pending), State::Cancelled); });
     return Response{true, std::format("OK purged={}", removed.size())};
 }
 

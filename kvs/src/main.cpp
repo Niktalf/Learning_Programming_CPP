@@ -23,7 +23,7 @@ void print_help() {
   MSET <k1> <v1> <k2> <v2>   store several, all or nothing
   GET <key>                  read a value
   DEL <key>                  delete a key
-  EXISTS <key>               1 or 0
+  EXISTS <key> [key...]      how many of the keys exist
   TYPE <key>                 type of the value
   INCR <key> [step]          increment an integer
   LPUSH <key> <item>         prepend to a list
@@ -32,6 +32,8 @@ void print_help() {
   LRANGE <key> <from> <to>   items by index, negative from the end: 0 -1 is all
   LLEN <key>                 length of a list
   KEYS [pattern] [limit]     list keys matching a glob, * and ?
+  SCAN <cursor> [pattern] [count]   one page of keys; repeat until cursor is 0
+  KEYSRANGE <from> <to> [limit]     keys between from and to, in order
   VERSION <key>              generation and timestamp of the record
   APPEND <key> <suffix>      append to a string, returns the new length
   STRLEN <key>               length of a string, 0 if absent
@@ -43,7 +45,7 @@ void print_help() {
 }
 
 void print_usage() {
-    std::println(stderr, "usage: kvs_cli [--maxmemory=BYTES] [--log=PATH]");
+    std::println(stderr, "usage: kvs_cli [--maxmemory=BYTES] [--log=PATH] [--engine=std|hash|bad-hash|open]");
 }
 
 void run_capture_demo(const kvs::Store& store) {
@@ -77,6 +79,7 @@ void run_capture_demo(const kvs::Store& store) {
 [[nodiscard]] std::optional<kvs::Server::Options> parse_arguments(int argc, char* argv[]) {
     constexpr std::string_view memory_prefix = "--maxmemory=";
     constexpr std::string_view log_prefix = "--log=";
+    constexpr std::string_view engine_prefix = "--engine=";
     kvs::Server::Options options;
     for (int i = 1; i < argc; ++i) {
         const std::string_view argument = argv[i];
@@ -88,6 +91,13 @@ void run_capture_demo(const kvs::Store& store) {
         } else if (argument.substr(0, log_prefix.size()) == log_prefix &&
                    argument.size() > log_prefix.size()) {
             options.log = std::string(argument.substr(log_prefix.size()));
+        } else if (argument.starts_with(engine_prefix)) {
+            // Этап 8: движок хранилища — параметр запуска.
+            const auto engine = kvs::parse_engine_kind(argument.substr(engine_prefix.size()));
+            if (!engine) {
+                return std::nullopt;
+            }
+            options.engine = *engine;
         } else {
             return std::nullopt;
         }
@@ -116,7 +126,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::println("KVS, stage 7");
+    std::println("KVS, stage 8, engine {}", server->store().engine_name());
     print_help();
 
     std::string raw;   // объявлена до цикла: в неё читает std::getline

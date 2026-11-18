@@ -1,5 +1,7 @@
 #include "kvs/bytes.hpp"
 
+#include <algorithm>
+#include <iterator>
 #include <string>
 
 #include "kvs/ivalue.hpp"
@@ -15,9 +17,8 @@ void put_u64(std::vector<std::byte>& out, std::uint64_t value) {
 
 void put_string(std::vector<std::byte>& out, std::string_view text) {
     put_u64(out, text.size());
-    for (const char c : text) {
-        out.push_back(static_cast<std::byte>(c));
-    }
+    // Этап 8: алгоритм вместо цикла — каждый символ в байт.
+    std::ranges::transform(text, std::back_inserter(out), [](char c) { return static_cast<std::byte>(c); });
 }
 
 void ByteReader::require(std::size_t count) const {
@@ -39,9 +40,10 @@ std::string ByteReader::string() {
     const std::uint64_t size = u64();
     require(size);
     std::string text(size, '\0');
-    for (char& c : text) {
-        c = static_cast<char>(bytes_[position_++]);
-    }
+    const auto first = bytes_.begin() + static_cast<std::ptrdiff_t>(position_);
+    std::ranges::transform(first, first + static_cast<std::ptrdiff_t>(size), text.begin(),
+                           [](std::byte b) { return static_cast<char>(b); });
+    position_ += size;
     return text;
 }
 

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <format>
 #include <memory>
+#include <ranges>
 #include <string>
 #include <utility>
 #include <vector>
@@ -43,15 +44,8 @@ std::string ListValue::to_string() const {
     // Обход итераторами, а не по индексу: items_[i] у deque — O(1), но с
     // двумя обращениями к памяти (карта блоков, затем блок); итератор идёт
     // по блоку подряд.
-    std::string text = "[";
-    const char* separator = "";
-    for (const std::string& item : items_) {
-        text += separator;
-        text += item;
-        separator = ", ";
-    }
-    text += ']';
-    return text;
+    // Этап 8: join_with вместо цикла с разделителем.
+    return "[" + std::ranges::to<std::string>(items_ | std::views::join_with(std::string_view(", "))) + "]";
 }
 
 std::unique_ptr<IValue> ListValue::clone() const {

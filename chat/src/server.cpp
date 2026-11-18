@@ -1,5 +1,6 @@
 #include "chat/server.hpp"
 
+#include <algorithm>
 #include <exception>
 #include <new>
 #include <string>
@@ -73,10 +74,11 @@ Response Server::handle(Session& session, std::string line) {
         // только с осмысленным ответом. Ответ строится по исходной причине,
         // цепочка контекста приписывается в скобках.
         const std::exception_ptr error = std::current_exception();
-        std::string text = "ERR " + reason_of(root_cause(error));
-        for (const std::string& step : context_of(error)) {
-            text += " (" + step + ")";
-        }
+        // Этап 8: свёртка вместо цикла — каждое звено дописывается к ответу.
+        std::string text = std::ranges::fold_left(context_of(error), "ERR " + reason_of(root_cause(error)),
+                                                  [](std::string acc, const std::string& step) {
+                                                      return std::move(acc) + " (" + step + ")";
+                                                  });
         return Response{false, std::move(text)};
     }
 }

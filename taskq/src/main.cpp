@@ -1,8 +1,11 @@
-#include <exception>
+#include <charconv>
+#include <chrono>
 #include <cstdio>
+#include <exception>
+#include <filesystem>
 #include <iostream>
-#include <print>
 #include <optional>
+#include <print>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -25,8 +28,8 @@ void print_help() {
                                    quote bodies with spaces
   POLL <queue> [worker]            lease the next task: highest priority first,
                                    then the oldest; optionally to a worker
-  LIST <queue> [prio>=N] [type=K] [limit=N]
-                                   tasks waiting in a queue
+  LIST <queue> [prio>=N] [type=K] [limit=N] [after=P.S]
+                                   ready tasks of a queue, a page at a time
   ACK <id>                         mark a leased task done
   FAIL <id>                        mark a leased task failed
   RELEASE <id>                     return a leased task to its queue
@@ -35,7 +38,8 @@ void print_help() {
   BUMP <id> [n]                    add to a numeric payload
   WORKER <name>                    register a worker
   GONE <name>                      the worker disappeared
-  REAP                             requeue tasks of vanished workers
+  REAP                             requeue tasks of vanished workers and
+                                   expired leases, release due delayed tasks
   DELAY <id> <delay>               hold a pending task back: 90, 90s, 15m, 2h
   PURGE <queue>                    cancel all pending tasks of a queue
   PEEK <queue>                     the task POLL would lease, without leasing
@@ -60,19 +64,52 @@ void run_capture_demo(const taskq::TaskStore& store) {
     std::println("captured by value:     {}   (the lambda changed its own copy)", by_value);
 }
 
+struct Arguments {
+    std::optional<std::filesystem::path> log;
+    taskq::EngineKind engine = taskq::default_engine_kind();
+    std::chrono::seconds lease_timeout = taskq::Service::default_lease_timeout;
+};
+
+// Разбор аргументов: --log=PATH, --engine=NAME, --lease=SECONDS в любом
+// порядке. Неизвестный ключ, движок или срок — отказ запуска, а не молчаливое
+// игнорирование.
+[[nodiscard]] std::optional<Arguments> parse_arguments(int argc, char* argv[]) {
+    constexpr std::string_view log_prefix = "--log=";
+    constexpr std::string_view engine_prefix = "--engine=";
+    constexpr std::string_view lease_prefix = "--lease=";
+    Arguments arguments;
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view argument = argv[i];
+        if (argument.starts_with(log_prefix) && argument.size() > log_prefix.size()) {
+            arguments.log = std::filesystem::path(argument.substr(log_prefix.size()));
+        } else if (argument.starts_with(engine_prefix)) {
+            const auto engine = taskq::parse_engine_kind(argument.substr(engine_prefix.size()));
+            if (!engine) {
+                return std::nullopt;
+            }
+            arguments.engine = *engine;
+        } else if (argument.starts_with(lease_prefix)) {
+            const std::string_view digits = argument.substr(lease_prefix.size());
+            long long seconds = 0;
+            const auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), seconds);
+            if (error != std::errc{} || end != digits.data() + digits.size() || seconds <= 0) {
+                return std::nullopt;
+            }
+            arguments.lease_timeout = std::chrono::seconds(seconds);
+        } else {
+            return std::nullopt;
+        }
+    }
+    return arguments;
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
-    constexpr std::string_view log_prefix = "--log=";
-    std::optional<std::string> log_path;
-    for (int i = 1; i < argc; ++i) {
-        const std::string_view argument = argv[i];
-        if (argument.substr(0, log_prefix.size()) != log_prefix ||
-            argument.size() == log_prefix.size()) {
-            std::println(stderr, "usage: taskq_cli [--log=PATH]");
-            return 2;
-        }
-        log_path = std::string(argument.substr(log_prefix.size()));
+    const auto arguments = parse_arguments(argc, argv);
+    if (!arguments) {
+        std::println(stderr, "usage: taskq_cli [--log=PATH] [--engine=std|hash|bad-hash|open] [--lease=SECONDS]");
+        return 2;
     }
 
     // Запуск — отдельная граница, не командная: журнал не открылся, и
@@ -80,17 +117,15 @@ int main(int argc, char* argv[]) {
     // кучи, — только затем, чтобы конструктор оказался внутри try.
     std::optional<taskq::Service> service;
     try {
-        if (log_path) {
-            service.emplace(*log_path);
-        } else {
-            service.emplace();
-        }
+        service.emplace(arguments->engine, arguments->log);
     } catch (const std::exception& e) {
         std::println(stderr, "cannot start: {}", e.what());
         return 1;
     }
 
-    std::println("TASKQ, stage 7");
+    service->set_lease_timeout(arguments->lease_timeout);
+    std::println("TASKQ, stage 8, engine {}, lease {}s", service->store().engine_name(),
+                 arguments->lease_timeout.count());
     print_help();
 
     std::string raw;   // объявлена до цикла: в неё читает std::getline

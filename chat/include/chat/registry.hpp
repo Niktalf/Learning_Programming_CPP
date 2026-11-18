@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <concepts>
 #include <cstddef>
@@ -7,6 +8,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -152,12 +154,10 @@ template <class... Params>
 }
 
 [[nodiscard]] inline std::string lower(std::string_view text) {
-    std::string result(text);
-    for (char& c : result) {
-        if (c >= 'A' && c <= 'Z') {
-            c = static_cast<char>(c - 'A' + 'a');
-        }
-    }
+    std::string result(text.size(), '\0');
+    std::ranges::transform(text, result.begin(), [](char c) {
+        return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+    });
     return result;
 }
 
@@ -279,11 +279,7 @@ public:
     }
 
     [[nodiscard]] std::vector<std::string> names() const {
-        std::vector<std::string> result;
-        for (const auto& [name, binder] : table_) {
-            result.push_back(name);
-        }
-        return result;
+        return std::ranges::to<std::vector<std::string>>(table_ | std::views::keys);
     }
 
 private:

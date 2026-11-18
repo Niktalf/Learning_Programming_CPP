@@ -7,7 +7,8 @@
 #include <functional>
 #include <generator>
 #include <iterator>
-#include <unordered_map>
+#include <memory>
+#include <set>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -16,23 +17,13 @@
 #include <vector>
 
 #include "kvs/concepts.hpp"
+#include "kvs/engine.hpp"
 #include "kvs/errors.hpp"
 #include "kvs/glob.hpp"
 #include "kvs/value.hpp"
 #include "kvs/version.hpp"
 
 namespace kvs {
-
-// Этап 7: хеш для основной таблицы. Прозрачный (is_transparent): с ним и с
-// std::equal_to<> поиск в unordered_map принимает string_view и не строит
-// временную строку — то, что у std::map давал std::less<>. Разнородный
-// поиск в неупорядоченных контейнерах появился только в C++20.
-struct KeyHash {
-    using is_transparent = void;
-    [[nodiscard]] std::size_t operator()(std::string_view key) const noexcept {
-        return std::hash<std::string_view>{}(key);
-    }
-};
 
 // Хранилище параметризовано типом значения по одной практической причине:
 // в тестах вместо Value подставляется инструментированный тип, считающий
@@ -51,24 +42,43 @@ class BasicStore {
         RecordVersion version;
     };
 
-    // Этап 7: основная таблица — std::unordered_map, выбрана по замерам
-    // (docs/benchmarks.md): на 10^6 ключей поиск в 11 раз быстрее std::map,
-    // вставка — в 3,7 раза. Порядка ключей у неё нет; KEYS, которому он
-    // нужен, сортирует свой результат сам, и это дешевле, чем платить за
-    // порядок в каждом GET. Худший случай — ключи с одним хешем — разобран
-    // там же; ответ на него — собственная хеш-функция этапа 8.
-    //
-    // KeyHash и std::equal_to<> включают разнородный поиск: методы
-    // принимают string_view и не создают временную строку на каждый вызов.
-    using Map = std::unordered_map<std::string, Entry, KeyHash, std::equal_to<>>;
+    // Этап 7: основная таблица — хеш-таблица, выбрана по замерам
+    // (docs/benchmarks.md): на 10^6 ключей поиск в 11 раз быстрее std::map.
+    // Этап 8: таблица — за интерфейсом движка (engine.hpp), и какой именно
+    // хеш-таблицей она будет — std::unordered_map, собственными цепочками
+    // или открытой адресацией, — решается при создании хранилища.
+    using Engine = IStorageEngine<Entry>;
+    using Slot = typename Engine::Slot;
 
 public:
-    BasicStore() = default;
+    // Движок по умолчанию — из окружения (default_engine_kind): так весь
+    // набор тестов проходит на каждом движке без правок.
+    BasicStore() : BasicStore(default_engine_kind()) {}
+    explicit BasicStore(EngineKind engine) : engine_(make_engine<Entry>(engine)) {}
 
     // Этап 3: хранилище с ограничением объёма, как maxmemory у Redis. Объём
     // считается приближённо — длина ключа плюс размер значения, — и этого
     // достаточно, чтобы отказать записи до того, как что-либо изменено.
-    explicit BasicStore(std::size_t memory_limit) noexcept : memory_limit_(memory_limit) {}
+    explicit BasicStore(std::size_t memory_limit, EngineKind engine = default_engine_kind())
+        : engine_(make_engine<Entry>(engine)), memory_limit_(memory_limit) {}
+
+    // Копия — глубокая: движок клонируется (на копии стоит MSET), диапазонный
+    // индекс копируется. Перемещение — передача владения движком.
+    BasicStore(const BasicStore& other)
+        : engine_(other.engine_->clone()), ordered_(other.ordered_), used_(other.used_),
+          memory_limit_(other.memory_limit_), clock_(other.clock_) {}
+    BasicStore& operator=(const BasicStore& other) {
+        BasicStore copy(other);
+        swap(*this, copy);
+        return *this;
+    }
+    BasicStore(BasicStore&&) noexcept = default;
+    BasicStore& operator=(BasicStore&&) noexcept = default;
+    ~BasicStore() = default;
+
+    [[nodiscard]] std::string_view engine_name() const noexcept { return engine_->name(); }
+    // Число корзин движка — граница курсора SCAN; для тестов и docs/hashing.md.
+    [[nodiscard]] std::size_t engine_bucket_count() const noexcept { return engine_->bucket_count(); }
 
     // Сильная гарантия: всё, что может бросить, — проверка предела и вставка —
     // происходит до изменения учёта занятой памяти. Бросок оставляет
@@ -78,19 +88,32 @@ public:
     // отметку логических часов хранилища. Версия лежит в той же записи
     // таблицы, что и значение: одна вставка вместо двух, и согласовывать
     // два контейнера при броске не нужно.
+    //
+    // Этап 8: две структуры — движок и диапазонный индекс, — и сильная
+    // гарантия держится откатом: новый ключ сначала ложится в индекс, и если
+    // движок бросит, ключ из индекса убирается; удаление из std::set не
+    // бросает.
     void set(std::string key, V value, std::string author = "local") {
         const std::size_t added = footprint(key, value);
-        const auto it = data_.find(key);
-        const std::size_t removed = it == data_.end() ? 0 : footprint(it->first, it->second.value);
+        const Entry* const existing = engine_->find(key);
+        const std::size_t removed = existing == nullptr ? 0 : footprint(key, existing->value);
         const std::size_t next_used = used_ - removed + added;
         require_room(key, next_used);
 
-        const std::uint64_t generation = it == data_.end() ? 1 : it->second.version.generation + 1;
+        const std::uint64_t generation = existing == nullptr ? 1 : existing->version.generation + 1;
         Entry entry{std::move(value), RecordVersion{generation, clock_ + 1, std::move(author)}};
-        // insert_or_assign из C++17: одна операция вместо поиска и вставки.
-        // Бросить может только выделение узла для нового ключа, и тогда
-        // ничего не изменено; дальше — операции, которые не бросают.
-        data_.insert_or_assign(std::move(key), std::move(entry));
+        std::optional<typename Ordered::iterator> indexed;
+        if (existing == nullptr) {
+            indexed = ordered_.insert(key).first;   // может бросить — ничего не изменено
+        }
+        try {
+            engine_->put(std::move(key), std::move(entry));
+        } catch (...) {
+            if (indexed) {
+                ordered_.erase(*indexed);
+            }
+            throw;
+        }
         used_ = next_used;
         ++clock_;
     }
@@ -120,12 +143,12 @@ public:
     // прежнее. Ключа нет — KeyNotFoundError: создавать значение — дело set.
     template <KeyLike K, class F>
     auto modify(const K& key, std::size_t growth, F&& fn) {
-        const auto it = data_.find(key_view(key));
-        if (it == data_.end()) {
+        Entry* const found = engine_->find(key_view(key));
+        if (found == nullptr) {
             throw KeyNotFoundError(std::string(key_view(key)));
         }
-        require_room(it->first, used_ + growth);
-        Entry& entry = it->second;
+        require_room(std::string(key_view(key)), used_ + growth);
+        Entry& entry = *found;
         const std::size_t before = entry.value.size();
         if constexpr (std::is_void_v<std::invoke_result_t<F, V&>>) {
             std::invoke(std::forward<F>(fn), entry.value);   // бросок — ничего не учтено
@@ -151,38 +174,41 @@ public:
     // литерал. get(42) не соберётся с внятным сообщением.
     template <KeyLike K>
     [[nodiscard]] std::optional<V> get(const K& key) const {
-        const auto it = data_.find(key_view(key));
-        if (it == data_.end()) {
+        const Entry* const entry = engine_->find(key_view(key));
+        if (entry == nullptr) {
             return std::nullopt;
         }
-        return it->second.value;
+        return entry->value;
     }
 
     // Этап 7: доступ к значению без копии — для команд, которые только
     // читают. До этапа 7 GET, TYPE и LLEN шли через get и копировали
     // значение целиком, а для списка это копия всех его элементов ради
     // одного числа. Ссылка действительна, пока ключ не изменён и не удалён.
+    //
+    // Этап 8: и пока в хранилище ничего не вставлено — у открытой адресации
+    // вставка может перенести все элементы.
     template <KeyLike K>
     [[nodiscard]] std::optional<std::reference_wrapper<const V>> lookup(const K& key) const {
-        const auto it = data_.find(key_view(key));
-        if (it == data_.end()) {
+        const Entry* const entry = engine_->find(key_view(key));
+        if (entry == nullptr) {
             return std::nullopt;
         }
-        return std::cref(it->second.value);
+        return std::cref(entry->value);
     }
 
     template <KeyLike K>
     [[nodiscard]] bool contains(const K& key) const noexcept {
-        return data_.find(key_view(key)) != data_.end();
+        return engine_->contains(key_view(key));
     }
 
     template <KeyLike K>
     [[nodiscard]] std::optional<RecordVersion> version(const K& key) const {
-        const auto it = data_.find(key_view(key));
-        if (it == data_.end()) {
+        const Entry* const entry = engine_->find(key_view(key));
+        if (entry == nullptr) {
             return std::nullopt;
         }
-        return it->second.version;
+        return entry->version;
     }
 
     // --- Этап 5: KEYS через ranges --------------------------------------
@@ -210,7 +236,7 @@ public:
         // Этап 7: конвейер идёт по самому хранилищу — его собственному
         // итератору, — а не по data_ | views::keys. Код конвейера этапа 5 не
         // изменился: ranges нужен только forward_iterator.
-        const auto bounded = static_cast<std::ptrdiff_t>(std::min(limit, data_.size()));
+        const auto bounded = static_cast<std::ptrdiff_t>(std::min(limit, size()));
         auto selected = *this |
                         std::views::filter([&predicate](const std::string& key) {
                             return std::invoke(predicate, std::string_view(key));
@@ -221,11 +247,12 @@ public:
         // узнать размер и зарезервировать память, и лишь затем копирует: в
         // libstdc++ предикат вызывается почти вдвое чаще. Для дешёвого
         // предиката это неважно, для glob_match по тысячам ключей — заметно.
+        //
+        // Этап 8: ranges::copy — тоже один проход, без предварительного
+        // подсчёта: алгоритм вместо цикла, и предикат вызывается столько же.
         std::vector<std::string> result;
-        result.reserve(limit < data_.size() ? limit : data_.size());
-        for (const std::string& key : selected) {
-            result.push_back(key);
-        }
+        result.reserve(std::min(limit, size()));
+        std::ranges::copy(selected, std::back_inserter(result));
         // Этап 7: у unordered_map порядка нет, и ключи пришли в порядке
         // корзин. Сортируется только результат — limit ключей, а не вся
         // таблица. При limit меньше числа подходящих ключей какие именно
@@ -249,7 +276,7 @@ public:
     // Генератор, как и представление, смотрит в таблицу: обходить его можно
     // только пока хранилище не меняется.
     [[nodiscard]] std::generator<const std::string&> keys_lazily(std::string pattern) const {
-        for (const auto& [key, entry] : data_) {
+        for (const std::string& key : *this) {
             if (glob_match(pattern, key)) {
                 co_yield key;
             }
@@ -258,16 +285,18 @@ public:
 
     // --- Этап 7: собственный итератор по ключам -------------------------
     //
-    // Прямой (forward) итератор: многопроходный, копируемый, сравнимый.
-    // Обёртка над итератором таблицы, которая отдаёт только ключ: значение
-    // и версия — подробности хранилища, снаружи их видно через get. Пять
-    // типов-членов — то, что смотрят std::iterator_traits и концепции:
-    // категория, тип значения, тип ссылки, указателя и разности.
+    // Прямой (forward) итератор: многопроходный, копируемый, сравнимый. Отдаёт
+    // только ключ: значение и версия — подробности хранилища, снаружи их
+    // видно через get. Пять типов-членов — то, что смотрят
+    // std::iterator_traits и концепции.
     //
-    // Итератор действителен, пока таблица не перестраивается: у
-    // unordered_map вставка, вызвавшая рехеширование, делает недействительными
-    // все итераторы (но не ссылки на элементы); удаление — только итератор
-    // удалённого. Поэтому обходить хранилище можно, только пока в него не
+    // Этап 8: итератор ходит по позициям движка — корзина и номер в ней, —
+    // а не по итератору конкретного контейнера: движок за интерфейсом, и
+    // какой он, итератор не знает. Конец — пустая позиция.
+    //
+    // Итератор действителен, пока таблица не перестраивается: вставка,
+    // вызвавшая рехеширование, перекладывает элементы по другим корзинам у
+    // любого движка. Поэтому обходить хранилище можно, только пока в него не
     // пишут.
     class Iterator {
     public:
@@ -281,11 +310,11 @@ public:
         // сравним только с другим таким же и разыменовывать его нельзя.
         Iterator() = default;
 
-        [[nodiscard]] reference operator*() const noexcept { return position_->first; }
-        [[nodiscard]] pointer operator->() const noexcept { return &position_->first; }
+        [[nodiscard]] reference operator*() const noexcept { return engine_->key_at(*slot_); }
+        [[nodiscard]] pointer operator->() const noexcept { return &engine_->key_at(*slot_); }
 
         Iterator& operator++() noexcept {
-            ++position_;
+            slot_ = engine_->next(*slot_);
             return *this;
         }
 
@@ -293,22 +322,29 @@ public:
         // forward-итератор от input: старую копию можно разыменовать.
         Iterator operator++(int) noexcept {
             Iterator before = *this;
-            ++position_;
+            ++*this;
             return before;
         }
 
-        // operator!= компилятор выводит из == сам (C++20).
-        [[nodiscard]] friend bool operator==(const Iterator&, const Iterator&) = default;
+        // Номер корзины текущей позиции — на нём стоит курсор SCAN.
+        [[nodiscard]] std::size_t bucket() const noexcept { return slot_->bucket; }
+        [[nodiscard]] bool at_end() const noexcept { return !slot_; }
+
+        // Позиции сравниваются без движка: итераторы одного хранилища.
+        [[nodiscard]] friend bool operator==(const Iterator& a, const Iterator& b) noexcept {
+            return a.slot_ == b.slot_;
+        }
 
     private:
         friend class BasicStore;
-        explicit Iterator(typename Map::const_iterator position) noexcept : position_(position) {}
+        Iterator(const Engine* engine, std::optional<Slot> slot) noexcept : engine_(engine), slot_(slot) {}
 
-        typename Map::const_iterator position_{};
+        const Engine* engine_ = nullptr;
+        std::optional<Slot> slot_;
     };
 
-    [[nodiscard]] Iterator begin() const noexcept { return Iterator(data_.begin()); }
-    [[nodiscard]] Iterator end() const noexcept { return Iterator(data_.end()); }
+    [[nodiscard]] Iterator begin() const noexcept { return Iterator(engine_.get(), engine_->first_from(0)); }
+    [[nodiscard]] Iterator end() const noexcept { return Iterator(engine_.get(), std::nullopt); }
 
     // --- Звёздочка этапа 7: ленивый просмотр со стражем ------------------
     //
@@ -317,8 +353,7 @@ public:
     // подходящий ключ ищет только при ++ — ничего не вычисляется заранее.
     // Конец — отдельный тип-страж ScanEnd, а не второй итератор: «конец»
     // здесь — не позиция, а условие «подходящих ключей больше нет», и
-    // итератор проверяет его сам. Так устроены диапазоны C++20; парный
-    // итератор конца пришлось бы хранить и сравнивать.
+    // итератор проверяет его сам.
     struct ScanEnd {};
 
     class ScanIterator {
@@ -329,7 +364,7 @@ public:
         ScanIterator(ScanIterator&&) noexcept = default;
         ScanIterator& operator=(ScanIterator&&) noexcept = default;
 
-        [[nodiscard]] const std::string& operator*() const noexcept { return position_->first; }
+        [[nodiscard]] const std::string& operator*() const noexcept { return *position_; }
 
         ScanIterator& operator++() {
             ++position_;
@@ -342,32 +377,93 @@ public:
         void operator++(int) { ++*this; }
 
         [[nodiscard]] friend bool operator==(const ScanIterator& it, ScanEnd) noexcept {
-            return it.position_ == it.end_;
+            return it.position_.at_end();
         }
 
     private:
         friend class BasicStore;
-        ScanIterator(const Map& table, std::string_view pattern)
-            : position_(table.begin()), end_(table.end()), pattern_(pattern) {
-            skip();
-        }
+        ScanIterator(Iterator first, std::string_view pattern) : position_(first), pattern_(pattern) { skip(); }
 
         // Сдвиг до ближайшего подходящего ключа — вся «ленивость» здесь.
         void skip() {
-            while (position_ != end_ && !glob_match(pattern_, position_->first)) {
+            while (!position_.at_end() && !glob_match(pattern_, *position_)) {
                 ++position_;
             }
         }
 
-        typename Map::const_iterator position_;
-        typename Map::const_iterator end_;
+        Iterator position_;
         std::string_view pattern_;   // образец живёт у вызывающего, как и диапазон
     };
 
     // Диапазон смотрит в таблицу и в строку образца: оба обязаны пережить
     // обход.
     [[nodiscard]] auto scan(std::string_view pattern) const {
-        return std::ranges::subrange<ScanIterator, ScanEnd>(ScanIterator(data_, pattern), ScanEnd{});
+        return std::ranges::subrange<ScanIterator, ScanEnd>(ScanIterator(begin(), pattern), ScanEnd{});
+    }
+
+    // --- Этап 8: SCAN с курсором ----------------------------------------
+    //
+    // Курсор — номер корзины, как в Redis. Страница — ключи из count корзин
+    // подряд начиная с cursor, подходящие под образец, и курсор следующей
+    // страницы; 0 — обход закончен. Клиент, которому нужно всё, повторяет
+    // SCAN, пока не получит 0, и ни один вызов не держит хранилище дольше,
+    // чем стоит обойти count корзин, — в этом отличие от KEYS.
+    //
+    // Целиком на алгоритмах: страница — диапазон итераторов хранилища от
+    // первой позиции в корзине cursor до первой позиции в корзине stop;
+    // filter — по образцу; ranges::copy — в результат. Ни одного ручного
+    // цикла.
+    //
+    // Гарантия — как у Redis без его хитрости с обратным порядком битов: ключ,
+    // который был в хранилище от первого до последнего вызова, попадёт в
+    // ответ хотя бы раз, если между вызовами не было рехеширования. После
+    // рехеширования ключи раскладываются по корзинам заново: у движка hash
+    // (степень двойки, удвоение) ключ может встретиться дважды, но не
+    // пропадёт; у std и open — может и пропасть (docs/hashing.md).
+    struct ScanPage {
+        std::size_t next_cursor = 0;
+        std::vector<std::string> keys;
+    };
+
+    [[nodiscard]] ScanPage scan_page(std::size_t cursor, std::size_t count, std::string_view pattern) const {
+        const std::size_t buckets = engine_->bucket_count();
+        // Хотя бы одна корзина за вызов: иначе SCAN с count 0 возвращал бы
+        // тот же курсор вечно.
+        const std::size_t step = std::max<std::size_t>(count, 1);
+        const std::size_t stop = cursor >= buckets ? buckets : cursor + std::min(step, buckets - cursor);
+        const Iterator first(engine_.get(), engine_->first_from(cursor));
+        const Iterator last(engine_.get(), engine_->first_from(stop));
+        ScanPage page;
+        page.next_cursor = stop >= buckets ? 0 : stop;
+        std::ranges::copy(std::ranges::subrange(first, last) | std::views::filter([pattern](const std::string& key) {
+                              return glob_match(pattern, key);
+                          }),
+                          std::back_inserter(page.keys));
+        return page;
+    }
+
+    // --- Этап 8: KEYSRANGE по упорядоченному индексу --------------------
+    //
+    // Ключи от from до to включительно, в порядке строк, не больше limit.
+    // Хеш-таблица порядка не хранит, и для диапазонов у хранилища есть
+    // второй индекс — std::set ключей, красно-чёрное дерево. lower_bound и
+    // upper_bound находят границы за O(log n), и между ними — ровно нужные
+    // ключи, без обхода всей таблицы. Почему дерево сбалансировано и почему
+    // вставка стоит не больше двух поворотов — docs/rbtree.md.
+    [[nodiscard]] std::vector<std::string> keys_range(std::string_view from, std::string_view to,
+                                                      std::size_t limit) const {
+        if (to < from) {
+            return {};
+        }
+        const auto first = ordered_.lower_bound(from);
+        const auto last = ordered_.upper_bound(to);
+        const auto bounded = static_cast<std::ptrdiff_t>(
+            std::min<std::size_t>(limit, static_cast<std::size_t>(std::distance(first, last))));
+        std::vector<std::string> result;
+        result.reserve(static_cast<std::size_t>(bounded));
+        std::ranges::copy(std::ranges::subrange(first, last) | std::views::take(bounded),
+                          std::back_inserter(result));
+        return result;
     }
 
     // Этап 3: несколько ключей одной операцией с сильной гарантией. Либо
@@ -400,7 +496,8 @@ public:
     // в базовую. Обмен таблиц и целых не бросает никогда — это и проверяет
     // тест Guarantee.SwapIsNoexcept.
     friend void swap(BasicStore& a, BasicStore& b) noexcept {
-        a.data_.swap(b.data_);
+        a.engine_.swap(b.engine_);
+        a.ordered_.swap(b.ordered_);
         std::swap(a.used_, b.used_);
         std::swap(a.memory_limit_, b.memory_limit_);
         std::swap(a.clock_, b.clock_);
@@ -408,12 +505,18 @@ public:
 
     template <KeyLike K>
     bool del(const K& key) {
-        const auto it = data_.find(key_view(key));
-        if (it == data_.end()) {
+        const std::string_view name = key_view(key);
+        const Entry* const entry = engine_->find(name);
+        if (entry == nullptr) {
             return false;
         }
-        used_ -= footprint(it->first, it->second.value);
-        data_.erase(it);
+        used_ -= name.size() + entry->value.size();
+        // Сначала индекс: ключ name может смотреть в строку, которую
+        // уничтожит удаление из движка.
+        if (const auto it = ordered_.find(name); it != ordered_.end()) {
+            ordered_.erase(it);
+        }
+        engine_->erase(name);
         return true;
     }
 
@@ -422,8 +525,8 @@ public:
         return memory_limit_;
     }
 
-    [[nodiscard]] std::size_t size() const noexcept { return data_.size(); }
-    [[nodiscard]] bool empty() const noexcept { return data_.empty(); }
+    [[nodiscard]] std::size_t size() const noexcept { return engine_->size(); }
+    [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
     // Функтор принимается по значению — как это делают алгоритмы стандартной
     // библиотеки. Именно поэтому лямбда с захватом по значению и mutable не
@@ -431,10 +534,12 @@ public:
     //
     // Structured bindings из C++17: пара раскладывается на имена, а не
     // читается через first и second.
+    //
+    // Этап 8: обход — позициями движка, как и у итератора.
     template <class F>
     void for_each(F fn) const {
-        for (const auto& [key, entry] : data_) {
-            fn(key, entry.value);
+        for (std::optional<Slot> slot = engine_->first_from(0); slot; slot = engine_->next(*slot)) {
+            fn(engine_->key_at(*slot), engine_->entry_at(*slot).value);
         }
     }
 
@@ -456,7 +561,13 @@ private:
         }
     }
 
-    Map data_;
+    // Этап 8: диапазонный индекс — те же ключи в порядке строк. Ключи в нём
+    // хранятся второй раз; в учёт объёма они не входят — учёт приближённый с
+    // этапа 3 и считает данные клиента, а не служебные структуры.
+    using Ordered = std::set<std::string, std::less<>>;
+
+    std::unique_ptr<Engine> engine_;
+    Ordered ordered_;
     std::size_t used_ = 0;
     std::optional<std::size_t> memory_limit_;
     std::uint64_t clock_ = 0;   // логические часы: +1 на каждую запись

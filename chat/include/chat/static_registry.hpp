@@ -46,18 +46,17 @@ namespace detail {
     return std::ranges::equal(a, b, {}, lower_ascii, lower_ascii);
 }
 
-// Все ли имена различны без учёта регистра. Квадратичный перебор — при
-// компиляции и над десятком имён это ничего не стоит.
+// Все ли имена различны без учёта регистра. Этап 8: алгоритмы вместо
+// двойного цикла — отсортировать без учёта регистра и найти соседей-
+// повторов. sort и adjacent_find — constexpr с C++20, так что всё это
+// по-прежнему вычисляется при компиляции.
 template <std::size_t N>
-[[nodiscard]] constexpr bool distinct_verbs(const std::array<std::string_view, N>& names) noexcept {
-    for (std::size_t i = 0; i < N; ++i) {
-        for (std::size_t j = i + 1; j < N; ++j) {
-            if (same_verb(names[i], names[j])) {
-                return false;
-            }
-        }
-    }
-    return true;
+[[nodiscard]] constexpr bool distinct_verbs(std::array<std::string_view, N> names) noexcept {
+    const auto less = [](std::string_view a, std::string_view b) {
+        return std::ranges::lexicographical_compare(a, b, {}, lower_ascii, lower_ascii);
+    };
+    std::ranges::sort(names, less);
+    return std::ranges::adjacent_find(names, same_verb) == names.end();
 }
 
 }  // namespace detail

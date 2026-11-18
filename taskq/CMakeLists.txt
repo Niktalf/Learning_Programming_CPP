@@ -78,7 +78,11 @@ add_executable(taskq_tests
     tests/test_static_registry.cpp
     tests/test_queue_iterator.cpp
     tests/test_emplace.cpp
-    tests/test_invalidation.cpp)
+    tests/test_invalidation.cpp
+    tests/test_hash_tables.cpp
+    tests/test_engines.cpp
+    tests/test_deadlines.cpp
+    tests/test_list_page.cpp)
 target_include_directories(taskq_tests PRIVATE tests tools)
 target_link_libraries(taskq_tests PRIVATE taskq_core taskq_warnings GTest::gtest_main)
 
@@ -99,13 +103,16 @@ target_link_libraries(taskq_alloc_tests PRIVATE taskq_core taskq_warnings GTest:
 
 # Этап 7: замеры контейнеров. Собираются всегда, запускаются руками и только
 # из оптимизированной сборки — цифры отладочной ничего не говорят. Результаты
-# и выводы — docs/benchmarks.md.
-foreach(bench taskq_bench_queue taskq_bench_index)
+# и выводы — docs/benchmarks.md. Этап 8: замер движков, звёздочка с открытой
+# адресацией и гистограмма хеша номеров (docs/hashing.md).
+foreach(bench taskq_bench_queue taskq_bench_index taskq_bench_engines taskq_bench_open taskq_id_histogram)
     string(REPLACE "taskq_" "" source ${bench})
     add_executable(${bench} bench/${source}.cpp tools/alloc_counter.cpp)
-    target_include_directories(${bench} PRIVATE tools bench)
+    target_include_directories(${bench} PRIVATE tools bench include)
     target_link_libraries(${bench} PRIVATE taskq_warnings)
 endforeach()
+# Замер движков идёт через хранилище целиком, а ему нужны исключения из ядра.
+target_link_libraries(taskq_bench_engines PRIVATE taskq_core)
 
 # Домашнее задание этапа 7: обход очереди с удалением внутри цикла.
 # Намеренно неопределённое поведение. Санитайзер адресов его не видит — чтение
@@ -131,6 +138,17 @@ add_test(NAME taskq_invalidation_detected
 include(GoogleTest)
 gtest_discover_tests(taskq_tests)
 gtest_discover_tests(taskq_alloc_tests)
+
+# Этап 8: тот же набор тестов на каждом движке индекса по номеру, без единой
+# правки в тестах. Движок по умолчанию берётся из переменной окружения
+# TASKQ_ENGINE (engine.hpp), и ctest запускает набор ещё трижды — на
+# собственной хеш-таблице, на ней же с заведомо плохой хеш-функцией и на
+# открытой адресации. Имена тестов получают приставку движка:
+# hash/Service.PollRespectsPriorityThenOrder.
+foreach(engine hash bad-hash open)
+    gtest_discover_tests(taskq_tests TEST_PREFIX "${engine}/"
+                         PROPERTIES ENVIRONMENT "TASKQ_ENGINE=${engine}")
+endforeach()
 
 # Этап 3, второй путь: цена исключений и std::expected без ошибок и с
 # ошибками. С этапа 6 меряется лексер: разбор команд ушёл в реестр.

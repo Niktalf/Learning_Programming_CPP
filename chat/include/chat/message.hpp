@@ -133,4 +133,10 @@ template <class M>
     return message->clone();
 }
 
+// Этап 8: отметка времени для индекса истории по времени — из идентификатора
+// сообщения, в миллисекундах от эпохи. Сообщение без идентификатора — 0.
+[[nodiscard]] inline std::uint64_t timestamp_of(const MessagePtr& message) noexcept {
+    return message->id().timestamp;
+}
+
 }  // namespace chat
