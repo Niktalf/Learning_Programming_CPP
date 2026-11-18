@@ -22,6 +22,14 @@ inline int& move_counter() {
     return count;
 }
 
+// Этап 7: у хранилища появился индекс по номеру задачи, и номера в одном
+// хранилище обязаны различаться. Каждый новый шпион получает свой номер;
+// копия — номер оригинала: это та же задача.
+inline std::uint64_t next_spy_id() {
+    static std::uint64_t id = 0;
+    return ++id;
+}
+
 // Инструментированный тип-шпион: считает копирования и перемещения.
 // Живёт только в тестах, поэтому Task не обрастает счётчиками.
 class Tracked {
@@ -29,12 +37,15 @@ public:
     Tracked() = default;
     explicit Tracked(std::string data) : data_(std::move(data)) {}
 
-    Tracked(const Tracked& other) : data_(other.data_) { ++copy_counter(); }
-    Tracked(Tracked&& other) noexcept : data_(std::move(other.data_)) { ++move_counter(); }
+    Tracked(const Tracked& other) : data_(other.data_), id_(other.id_) { ++copy_counter(); }
+    Tracked(Tracked&& other) noexcept : data_(std::move(other.data_)), id_(other.id_) {
+        ++move_counter();
+    }
 
     Tracked& operator=(const Tracked& other) {
         if (this != &other) {
             data_ = other.data_;
+            id_ = other.id_;
             ++copy_counter();
         }
         return *this;
@@ -42,6 +53,7 @@ public:
 
     Tracked& operator=(Tracked&& other) noexcept {
         data_ = std::move(other.data_);
+        id_ = other.id_;
         ++move_counter();
         return *this;
     }
@@ -51,8 +63,8 @@ public:
     const std::string& str() const noexcept { return data_; }
 
     // Этап 5: хранилище задач требует номер и ключ выборки — концепция
-    // QueuedTask. Шпиону номер не важен, ключ — только номер постановки.
-    [[nodiscard]] std::uint64_t id() const noexcept { return 0; }
+    // QueuedTask. Ключ шпиона — только номер постановки.
+    [[nodiscard]] std::uint64_t id() const noexcept { return id_; }
     [[nodiscard]] TaskKey key() const { return TaskKey{0, sequence_, std::string()}; }
     void set_sequence(std::uint64_t sequence) noexcept { sequence_ = sequence; }
 
@@ -62,6 +74,7 @@ public:
 
 private:
     std::string data_;
+    std::uint64_t id_ = next_spy_id();
     std::uint64_t sequence_ = 0;
 };
 

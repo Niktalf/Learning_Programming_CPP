@@ -75,6 +75,8 @@ TEST(Commands, MessageRequiresMembership) {
 
     EXPECT_TRUE(fails_with<chat::NotMemberError>(store, bob, "/msg #general hi"));
     EXPECT_TRUE(fails_with<chat::UnknownRoomError>(store, bob, "/msg #absent hi"));
+    // Этап 7: и комната от этого не появилась — operator[] нигде нет.
+    EXPECT_FALSE(store.contains("#absent"));
 }
 
 TEST(Commands, WhoListsMembersInOrder) {

@@ -12,6 +12,7 @@
 #include <optional>
 #include <ranges>
 #include <set>
+#include <unordered_map>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -22,6 +23,7 @@
 #include "chat/errors.hpp"
 #include "chat/message.hpp"
 #include "chat/message_id.hpp"
+#include "chat/ring_buffer.hpp"
 #include "chat/user.hpp"
 
 namespace chat {
@@ -36,14 +38,21 @@ namespace chat {
 // перемещением, которое бросать не должно. Концепция объявлена здесь, а не в
 // concepts.hpp: ей нужна видимая перегрузка duplicate из message.hpp.
 template <class M>
-concept HistoryItem = std::is_nothrow_move_constructible_v<M> && requires(const M& message) {
+//
+// Этап 7: и присваивание перемещением без исключений — полная история
+// вытесняет самое старое сообщение присваиванием поверх него, и в фазе
+// фиксации рассылки оно не должно бросать.
+concept HistoryItem = std::is_nothrow_move_constructible_v<M> &&
+                      std::is_nothrow_move_assignable_v<M> && requires(const M& message) {
     { duplicate(message) } -> std::same_as<M>;
 };
 
 template <HistoryItem M>
 class BasicChatStore {
 public:
-    using History = std::vector<M>;
+    // Этап 7: история — кольцевой буфер ограниченной ёмкости (ring_buffer.hpp,
+    // выбор по замерам — docs/benchmarks.md).
+    using History = RingBuffer<M>;
 
     // Этап 4: участники — наблюдатели, а не владельцы. Пользователями владеет
     // реестр (shared_ptr), комната хранит weak_ptr. Ушедший пользователь
@@ -58,14 +67,25 @@ public:
     // Комната — история, участники и тема. Структура, а не класс: инвариантов,
     // которые надо охранять, у неё нет, их держит хранилище.
     struct Room {
+        explicit Room(std::size_t history_capacity) : history(history_capacity) {}
+
         History history;
         Members members;
         std::string topic;
     };
 
+    // Сколько сообщений помнит комната по умолчанию.
+    static constexpr std::size_t default_history_capacity = 1000;
+
+    BasicChatStore() = default;
+    explicit BasicChatStore(std::size_t history_capacity) : history_capacity_(history_capacity) {}
+
+    [[nodiscard]] std::size_t history_capacity() const noexcept { return history_capacity_; }
+
     bool create_room(std::string room) {
-        // try_emplace из C++17: значение конструируется только при вставке.
-        return rooms_.try_emplace(std::move(room)).second;
+        // try_emplace из C++17: значение конструируется только при вставке —
+        // для существующей комнаты ни Room, ни её буфер не строятся.
+        return rooms_.try_emplace(std::move(room), history_capacity_).second;
     }
 
     // --- Реестр пользователей ----------------------------------------------
@@ -108,9 +128,14 @@ public:
     // одной записи реестра. Ни одна комната не меняется.
     //
     // Сильная гарантия: всё, что выделяет память, — до извлечения узла.
-    // Дальше только перемещения строк и перенос узла map (extract/insert из
-    // C++17), а он не выделяет памяти; бросить может лишь сравнение ключей,
-    // а сравнение строк не бросает.
+    // Дальше только перемещения строк и перенос узла (extract/insert из
+    // C++17), а он не выделяет памяти.
+    //
+    // Этап 7: реестр — unordered_map, и у его insert есть ещё один способ
+    // выделить память — рехеширование. Здесь его не будет: узел только что
+    // извлечён из этой же таблицы, и после вставки элементов станет столько
+    // же, сколько было, — массиву корзин расти незачем. Бросить может лишь
+    // хеш-функция, а хеш строки не бросает.
     void rename(std::string_view from, std::string to) {
         if (from == to) {
             return;
@@ -139,7 +164,21 @@ public:
     // был в комнате. Незарегистрированный ник — UnknownUserError.
     bool join(std::string_view room, std::string_view nick) {
         const std::shared_ptr<User> user = require_user(nick);
-        Room& target = rooms_.try_emplace(std::string(room)).first->second;
+        // Единственное место, где комната создаётся неявно, и это намеренно:
+        // войти в новую комнату и значит её завести. Все остальные операции
+        // ищут комнату через find и отсутствующую не создают — operator[]
+        // в хранилище не используется (docs/iterators.md).
+        //
+        // Этап 7: сначала find, и только для новой комнаты try_emplace. У
+        // try_emplace ключ — std::string, и до этапа 7 строка ключа
+        // строилась на каждый /join, даже в существующую комнату, чтобы тут
+        // же быть выброшенной. Разнородный try_emplace по string_view
+        // появится только в C++26.
+        auto it = rooms_.find(room);
+        if (it == rooms_.end()) {
+            it = rooms_.try_emplace(std::string(room), history_capacity_).first;
+        }
+        Room& target = it->second;
         purge(target.members);
         return target.members.insert(user).second;
     }
@@ -171,7 +210,10 @@ public:
         if (it == rooms_.end()) {
             return std::nullopt;
         }
+        // Этап 7: reserve по размеру состава — без него вектор рос бы
+        // удвоением и при каждом росте переносил бы уже собранные указатели.
         std::vector<std::shared_ptr<User>> alive;
+        alive.reserve(it->second.members.size());
         for (const std::weak_ptr<User>& member : it->second.members) {
             // lock, а не expired с последующим доступом: между проверкой и
             // доступом объект мог бы умереть. lock делает и то и другое разом.
@@ -236,7 +278,7 @@ public:
         if (!user || target.members.count(user) == 0) {
             throw NotMemberError(std::string(room), std::string(nick));
         }
-        reserve_one_more(target.history);   // может бросить — ничего не изменено
+        target.history.reserve_one_more();   // может бросить — ничего не изменено
         target.members.erase(user);
         target.history.push_back(std::move(notice));
     }
@@ -295,7 +337,7 @@ public:
         // память. Ёмкость — не наблюдаемое состояние: история с запасом
         // содержит те же сообщения, поэтому бросок здесь гарантию не портит.
         for (History* const history : targets) {
-            reserve_one_more(*history);
+            history->reserve_one_more();
         }
 
         commit(targets, copies);
@@ -317,22 +359,26 @@ public:
     }
 
     // Изменяющий доступ к сообщению нужен команде REACT.
+    //
+    // Этап 7: index — абсолютный номер сообщения в комнате. Вытесненное
+    // сообщение (номер меньше evicted) и ещё не написанное — пустой
+    // optional.
     [[nodiscard]] std::optional<std::reference_wrapper<M>>
     message_at(std::string_view room, std::size_t index) {
         const auto it = rooms_.find(room);
-        if (it == rooms_.end() || index >= it->second.history.size()) {
+        if (it == rooms_.end() || !holds(it->second.history, index)) {
             return std::nullopt;
         }
-        return std::ref(it->second.history[index]);
+        return std::ref(it->second.history[index - it->second.history.evicted()]);
     }
 
     [[nodiscard]] std::optional<std::reference_wrapper<const M>>
     message_at(std::string_view room, std::size_t index) const {
         const auto it = rooms_.find(room);
-        if (it == rooms_.end() || index >= it->second.history.size()) {
+        if (it == rooms_.end() || !holds(it->second.history, index)) {
             return std::nullopt;
         }
-        return std::cref(it->second.history[index]);
+        return std::cref(it->second.history[index - it->second.history.evicted()]);
     }
 
     [[nodiscard]] std::optional<std::string> topic(std::string_view room) const {
@@ -407,7 +453,8 @@ public:
         // размер, — и предикат вызывался бы почти вдвое чаще.
         std::vector<Entry> result;
         for (const auto& [index, message] : selected) {
-            result.push_back(Entry{static_cast<std::size_t>(index), std::cref(message)});
+            // Этап 7: номер — абсолютный: позиция в буфере плюс вытесненные.
+            result.push_back(Entry{history.evicted() + static_cast<std::size_t>(index), std::cref(message)});
         }
         std::ranges::reverse(result);   // обратно в хронологический порядок
         return result;
@@ -461,26 +508,15 @@ private:
         return user;
     }
 
+    // Удаление истёкших записей. До этапа 7 — цикл с it = erase(it); с
+    // C++20 то же самое одной строкой. Ошибочный вариант этого цикла —
+    // erase(it) и затем ++it — разобран в tools/invalidation_demo.cpp.
     static std::size_t purge(Members& members) {
-        std::size_t removed = 0;
-        for (auto it = members.begin(); it != members.end();) {
-            if (it->expired()) {
-                it = members.erase(it);
-                ++removed;
-            } else {
-                ++it;
-            }
-        }
-        return removed;
+        return std::erase_if(members, [](const std::weak_ptr<User>& member) { return member.expired(); });
     }
 
-    static void reserve_one_more(History& history) {
-        if (history.size() == history.capacity()) {
-            // Удвоение, а не +1: иначе каждая рассылка перевыделяла бы
-            // историю, и добавление стало бы линейным вместо амортизированно
-            // постоянного.
-            history.reserve(history.empty() ? 8 : history.size() * 2);
-        }
+    [[nodiscard]] static bool holds(const History& history, std::size_t index) noexcept {
+        return index >= history.evicted() && index - history.evicted() < history.size();
     }
 
     // Фиксация рассылки. noexcept здесь — контракт: ёмкость запасена,
@@ -493,11 +529,32 @@ private:
         }
     }
 
-    // std::less<> включает разнородный поиск: методы принимают string_view
-    // и не создают временную строку на каждый вызов.
+    // Этап 7, выбор по замерам (docs/benchmarks.md).
+    //
+    // Комнаты — std::map. /rooms выдаёт их по алфавиту, и у map это просто
+    // обход, а у unordered_map — сбор и сортировка всех имён: на 10^5 комнат
+    // 4,7 мс против 57. Поиск у unordered_map быстрее — 17 нс против 120 на
+    // 10^3 комнат, — но поиск комнаты идёт на каждое сообщение, которое само
+    // стоит микросекунды: выделение, копии для рассылки, идентификатор.
+    // Сотня наносекунд там не видна, а /rooms по unordered_map — видна.
+    // std::less<> включает разнородный поиск по string_view.
     using Map = std::map<std::string, Room, std::less<>>;
     Map rooms_;
-    std::map<std::string, std::shared_ptr<User>, std::less<>> users_;
+
+    // Реестр ников — std::unordered_map. Его по порядку не обходит никто
+    // (/who сортирует участников комнаты сам), а ищут в нём на каждую
+    // команду: is_member, find_user, rename. Здесь выигрыш хеш-таблицы в
+    // 7–11 раз на поиске ничем не уравновешен. NameHash и equal_to<>
+    // включают разнородный поиск по string_view — для неупорядоченных
+    // контейнеров он появился в C++20.
+    struct NameHash {
+        using is_transparent = void;
+        [[nodiscard]] std::size_t operator()(std::string_view name) const noexcept {
+            return std::hash<std::string_view>{}(name);
+        }
+    };
+    std::unordered_map<std::string, std::shared_ptr<User>, NameHash, std::equal_to<>> users_;
+    std::size_t history_capacity_ = default_history_capacity;
     std::uint64_t seq_ = 0;   // последний выданный номер сообщения
 };
 

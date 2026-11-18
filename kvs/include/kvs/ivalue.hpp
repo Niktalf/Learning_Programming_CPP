@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <span>
 #include <string>
@@ -95,8 +96,17 @@ private:
     std::int64_t data_;
 };
 
-// Список строк. Пока умеет только добавление в конец и длину; полный набор
-// операций появится на этапе 7 вместе с выбором контейнера.
+// Список строк. Этап 7: полный набор операций — вставка и снятие с обоих
+// концов и диапазон по индексам, как LPUSH, RPUSH, LPOP, RPOP и LRANGE у
+// Redis.
+//
+// Контейнер — std::deque, и выбран он по замерам (docs/benchmarks.md). На
+// профиле «много вставок в оба конца, редкое чтение по индексу» deque быстрее
+// list в 2–10 раз и быстрее vector в тысячи раз на 10^5 элементов: у vector
+// вставка в начало сдвигает все элементы, у list каждое чтение по индексу —
+// проход от начала, а каждый элемент — отдельное выделение памяти. deque
+// вставляет в оба конца за O(1), читает по индексу за O(1) и выделяет память
+// блоками.
 class ListValue final : public IValue {
 public:
     ListValue() = default;
@@ -108,12 +118,26 @@ public:
     [[nodiscard]] std::unique_ptr<IValue> clone() const override;
     [[nodiscard]] bool equals(const IValue& other) const noexcept override;
 
+    // Вставка с сильной гарантией: push_front и push_back у deque при
+    // исключении не меняют контейнер. Учёт объёма — после вставки.
+    void push_front(std::string item);
     void push_back(std::string item);
+
+    // Снятие с конца. Предусловие — список не пуст; проверяет вызывающий.
+    [[nodiscard]] std::string pop_front();
+    [[nodiscard]] std::string pop_back();
+
+    // Элементы с индексами от start до stop включительно, как LRANGE у
+    // Redis: отрицательный индекс считается от конца (-1 — последний),
+    // выход за границы обрезается, пустой диапазон — пустой результат.
+    [[nodiscard]] std::vector<std::string> range(std::int64_t start, std::int64_t stop) const;
+
     [[nodiscard]] std::size_t length() const noexcept { return items_.size(); }
-    [[nodiscard]] const std::vector<std::string>& items() const noexcept { return items_; }
+    [[nodiscard]] bool empty() const noexcept { return items_.empty(); }
+    [[nodiscard]] const std::deque<std::string>& items() const noexcept { return items_; }
 
 private:
-    std::vector<std::string> items_;
+    std::deque<std::string> items_;
     std::size_t bytes_ = 0;
 };
 

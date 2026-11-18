@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <new>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -31,10 +32,11 @@ public:
     ThrowOnNthCopy() = default;
     explicit ThrowOnNthCopy(std::string text) : text_(std::move(text)) {}
 
-    ThrowOnNthCopy(const ThrowOnNthCopy& other) : text_(other.text_) { tick(); }
+    ThrowOnNthCopy(const ThrowOnNthCopy& other) : text_(other.text_), id_(other.id_) { tick(); }
     ThrowOnNthCopy& operator=(const ThrowOnNthCopy& other) {
         tick();
         text_ = other.text_;
+        id_ = other.id_;
         return *this;
     }
     // Перемещение не бросает — ровно как у настоящей Task.
@@ -44,7 +46,8 @@ public:
     [[nodiscard]] const std::string& text() const noexcept { return text_; }
 
     // Этап 5: хранилище требует номер и ключ выборки — концепция QueuedTask.
-    [[nodiscard]] std::uint64_t id() const noexcept { return 0; }
+    // Номера различны (этап 7: индекс по номеру), копия — с номером оригинала.
+    [[nodiscard]] std::uint64_t id() const noexcept { return id_; }
     [[nodiscard]] taskq::TaskKey key() const { return taskq::TaskKey{0, sequence_, std::string()}; }
     void set_sequence(std::uint64_t sequence) noexcept { sequence_ = sequence; }
 
@@ -55,7 +58,13 @@ private:
         }
     }
     std::string text_;
+    std::uint64_t id_ = next_id();
     std::uint64_t sequence_ = 0;
+
+    static std::uint64_t next_id() {
+        static std::uint64_t id = 0;
+        return ++id;
+    }
 };
 
 using Store = taskq::BasicTaskStore<ThrowOnNthCopy>;
@@ -88,36 +97,47 @@ Batch make_batch() {
 }  // namespace
 
 TEST(Guarantee, BatchIsAllOrNothing) {
-    // Успешный пакет делает семь копирований: три копии очередей по одной
-    // старой задаче и четыре копии новых задач. Бросок перебирается на
-    // каждом — и в копии очереди, и на первой задаче, и в середине пакета,
-    // и на последней задаче. Одна точка броска доказывала бы гарантию только
-    // для неё.
-    const Batch batch = make_batch();
-    constexpr int copies_in_successful_batch = 7;
-    for (int nth = 1; nth <= copies_in_successful_batch; ++nth) {
+    // Этап 7: пакет вставляется на место, и при отказе каждая вставка
+    // откатывается. Перебираются все точки отказа внутри вставки: очередь
+    // k-й задачи подменяется несуществующей, и к этому моменту уже вставлены
+    // и проиндексированы k задач — от нуля до всех, кроме последней. Одна
+    // точка отказа доказывала бы гарантию только для неё.
+    for (std::size_t k = 0; k < 4; ++k) {
         Store store = make_store();
-
-        countdown() = nth;
-        bool thrown = false;
-        try {
-            store.submit_batch(batch);
-        } catch (const std::bad_alloc&) {
-            thrown = true;
-        }
-        countdown() = -1;
-
-        ASSERT_TRUE(thrown) << "copy " << nth;
-        EXPECT_EQ(sizes(store), (std::vector<std::size_t>{1, 1, 1})) << "copy " << nth;
-        EXPECT_EQ(store.peek("a")->text(), std::string("old")) << "copy " << nth;
+        Batch batch = make_batch();
+        batch[k].first = "absent";
+        EXPECT_THROW(store.submit_batch(std::move(batch)), taskq::UnknownQueueError) << "item " << k;
+        EXPECT_EQ(sizes(store), (std::vector<std::size_t>{1, 1, 1})) << "item " << k;
+        EXPECT_EQ(store.peek("a")->text(), std::string("old")) << "item " << k;
     }
-
-    // Восьмого копирования нет: перебор выше покрыл все точки броска.
     Store store = make_store();
-    countdown() = copies_in_successful_batch + 1;
-    EXPECT_NO_THROW(store.submit_batch(batch));
-    countdown() = -1;
+    store.submit_batch(make_batch());
     EXPECT_EQ(sizes(store), (std::vector<std::size_t>{3, 2, 2}));
+}
+
+TEST(Guarantee, CopiesHappenBeforeTheStoreIsTouched) {
+    // Пакет принимается по значению: кто хочет сохранить оригинал, отдаёт
+    // копию, и все копирования — до первого изменения хранилища. До этапа 7
+    // копии делались внутри submit_batch, и бросок проверялся на каждой;
+    // теперь бросок копии вообще не доходит до хранилища.
+    const Batch batch = make_batch();
+    for (int nth = 1; nth <= 4; ++nth) {
+        Store store = make_store();
+        countdown() = nth;
+        EXPECT_THROW(store.submit_batch(batch), std::bad_alloc) << "copy " << nth;
+        countdown() = -1;
+        EXPECT_EQ(sizes(store), (std::vector<std::size_t>{1, 1, 1})) << "copy " << nth;
+    }
+}
+
+TEST(Guarantee, DuplicateIdRollsBackTheTreeNodeToo) {
+    // Отказ при вставке в индекс — второй путь отката: задача уже в дереве
+    // очереди, а в индекс не попала. Откат удаляет и узел.
+    Store store = make_store();
+    Batch batch = make_batch();
+    batch[3].second = batch[1].second;   // тот же номер дважды
+    EXPECT_THROW(store.submit_batch(std::move(batch)), std::logic_error);
+    EXPECT_EQ(sizes(store), (std::vector<std::size_t>{1, 1, 1}));
 }
 
 TEST(Guarantee, UnknownQueueInTheMiddleChangesNothing) {
@@ -139,15 +159,27 @@ TEST(Guarantee, BatchKeepsOrderWithinQueue) {
     EXPECT_EQ(store.take("a")->text(), std::string("n4"));
 }
 
-TEST(Guarantee, CommitIsNoexcept) {
-    // Фиксация пакета — обмен векторов. Если бы swap мог бросить, последняя
-    // операция перестала бы быть точкой невозврата: часть очередей обменялась
-    // бы, часть нет, и сильная гарантия молча выродилась бы в базовую.
-    taskq::Queue a;
-    taskq::Queue b;
-    EXPECT_TRUE(noexcept(a.swap(b)));
+TEST(Guarantee, RollbackLeavesNoTraceInTheIndex) {
+    // Этап 7: откат вставок обязан убрать и записи индекса по номеру — иначе
+    // STATUS нашёл бы задачу, которой в очереди нет. Отказ — на последней
+    // задаче, когда три уже вставлены и проиндексированы.
+    Store store = make_store();
+    const Batch batch = make_batch();
+    Batch failing = batch;
+    failing.back().first = "absent";
+    EXPECT_THROW(store.submit_batch(std::move(failing)), taskq::UnknownQueueError);
+    for (const auto& [queue, task] : batch) {
+        EXPECT_FALSE(store.find(task.id()).has_value()) << task.text();
+    }
+    EXPECT_EQ(sizes(store), (std::vector<std::size_t>{1, 1, 1}));
+}
+
+TEST(Guarantee, MovesThatMustNotThrowDoNot) {
     // POLL переносит задачу в аренду перемещением и полагается на то, что
-    // оно не бросает.
+    // оно не бросает. Откат пакета опирается на удаление узла дерева и
+    // записи индекса по итератору и по числовому ключу: стандарт гарантирует,
+    // что они не бросают, хотя noexcept на них и не написан — проверить это
+    // можно только чтением стандарта, а не static_assert.
     EXPECT_TRUE(std::is_nothrow_move_assignable_v<taskq::Task>);
     EXPECT_TRUE(std::is_nothrow_move_constructible_v<taskq::Task>);
 }
@@ -201,8 +233,9 @@ TEST(Guarantee, BatchWithPolymorphicPayloads) {
     batch.emplace_back("b", throwing_task(12, "n2"));
     batch.emplace_back("a", throwing_task(13, "n3"));
 
-    // Две копии очередей по одной старой задаче и три копии новых.
-    constexpr int clones_in_successful_batch = 5;
+    // Три копии новых задач — при передаче пакета по значению, до первого
+    // изменения хранилища. Копий очередей с этапа 7 нет.
+    constexpr int clones_in_successful_batch = 3;
     for (int nth = 1; nth <= clones_in_successful_batch; ++nth) {
         taskq::TaskStore store;
         store.create_queue("a");

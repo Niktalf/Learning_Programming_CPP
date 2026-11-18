@@ -90,7 +90,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::println("TASKQ, stage 6");
+    std::println("TASKQ, stage 7");
     print_help();
 
     std::string raw;   // объявлена до цикла: в неё читает std::getline

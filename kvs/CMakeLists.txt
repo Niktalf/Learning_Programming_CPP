@@ -77,8 +77,12 @@ add_executable(kvs_tests
     tests/test_generator.cpp
     tests/test_registry.cpp
     tests/test_convert.cpp
-    tests/test_static_registry.cpp)
-target_include_directories(kvs_tests PRIVATE tools)
+    tests/test_static_registry.cpp
+    tests/test_lists.cpp
+    tests/test_store_iterator.cpp
+    tests/test_emplace.cpp
+    tests/test_invalidation.cpp)
+target_include_directories(kvs_tests PRIVATE tools tests)
 target_link_libraries(kvs_tests PRIVATE kvs_core kvs_warnings GTest::gtest_main)
 
 # Звёздочка: порядок вызовов конструкторов при вставке в std::map.
@@ -101,6 +105,33 @@ target_link_libraries(kvs_alloc_tests PRIVATE kvs_core kvs_warnings GTest::gtest
 add_executable(kvs_error_cost tools/error_cost.cpp)
 target_include_directories(kvs_error_cost PRIVATE tools)
 target_link_libraries(kvs_error_cost PRIVATE kvs_core kvs_warnings)
+
+# Этап 7: замеры контейнеров. Собираются всегда, запускаются руками и только
+# из оптимизированной сборки — цифры отладочной ничего не говорят. Результаты
+# и выводы — docs/benchmarks.md.
+foreach(bench kvs_bench_lists kvs_bench_tables)
+    string(REPLACE "kvs_" "" source ${bench})
+    add_executable(${bench} bench/${source}.cpp tools/alloc_counter.cpp)
+    target_include_directories(${bench} PRIVATE tools bench)
+    target_link_libraries(${bench} PRIVATE kvs_warnings)
+endforeach()
+
+# Домашнее задание этапа 7: обход с удалением внутри цикла.
+# kvs_invalidation_demo — намеренно неопределённое поведение, в обычную
+# сборку не входит; запускать под санитайзером адресов (случай map).
+# kvs_invalidation_debug — та же программа в отладочном режиме libstdc++,
+# который проверяет каждый итератор; тест ctest ждёт от него сообщения о
+# недействительном итераторе (случай deque, санитайзеру невидимый).
+add_executable(kvs_invalidation_demo EXCLUDE_FROM_ALL tools/invalidation_demo.cpp)
+target_link_libraries(kvs_invalidation_demo PRIVATE kvs_warnings)
+
+add_executable(kvs_invalidation_debug tools/invalidation_demo.cpp)
+target_compile_definitions(kvs_invalidation_debug PRIVATE _GLIBCXX_DEBUG)
+target_link_libraries(kvs_invalidation_debug PRIVATE kvs_warnings)
+add_test(NAME kvs_invalidation_detected
+         COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:kvs_invalidation_debug> -DARGS=deque
+                 "-DEXPECT=singular iterator"
+                 -P ${CMAKE_SOURCE_DIR}/cmake/expect_runtime_failure.cmake)
 
 include(GoogleTest)
 gtest_discover_tests(kvs_tests)

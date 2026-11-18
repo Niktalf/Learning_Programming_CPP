@@ -71,7 +71,10 @@ add_executable(chat_tests
     tests/test_generator.cpp
     tests/test_registry.cpp
     tests/test_convert.cpp
-    tests/test_static_registry.cpp)
+    tests/test_static_registry.cpp
+    tests/test_ring_buffer.cpp
+    tests/test_emplace.cpp
+    tests/test_invalidation.cpp)
 target_include_directories(chat_tests PRIVATE tests tools)
 target_link_libraries(chat_tests PRIVATE chat_core chat_warnings GTest::gtest_main)
 
@@ -89,6 +92,38 @@ target_link_libraries(chat_parse_allocations PRIVATE chat_core chat_warnings)
 add_executable(chat_alloc_tests tests/test_allocations.cpp tools/alloc_counter.cpp)
 target_include_directories(chat_alloc_tests PRIVATE tools)
 target_link_libraries(chat_alloc_tests PRIVATE chat_core chat_warnings GTest::gtest_main)
+
+# Этап 7: замеры контейнеров. Собираются всегда, запускаются руками и только
+# из оптимизированной сборки — цифры отладочной ничего не говорят. Результаты
+# и выводы — docs/benchmarks.md.
+foreach(bench chat_bench_history chat_bench_tables)
+    string(REPLACE "chat_" "" source ${bench})
+    add_executable(${bench} bench/${source}.cpp tools/alloc_counter.cpp)
+    target_include_directories(${bench} PRIVATE tools bench)
+    target_link_libraries(${bench} PRIVATE chat_warnings)
+endforeach()
+
+# Домашнее задание этапа 7: обход участников с удалением внутри цикла.
+# Намеренно неопределённое поведение. Санитайзер адресов его не видит — чтение
+# освобождённого узла происходит внутри libstdc++.so, которая не
+# инструментирована (docs/iterators.md); видят valgrind и отладочный режим
+# libstdc++. chat_invalidation_demo — обычная сборка, для valgrind, в обычную
+# сборку не входит. chat_invalidation_debug — отладочный режим, и тест
+# ctest ждёт от него сообщения о недействительном итераторе. С chat_core
+# программа не связывается: отладочный режим меняет устройство контейнеров,
+# и смешивать его с библиотекой, собранной без него, нельзя.
+add_executable(chat_invalidation_demo EXCLUDE_FROM_ALL tools/invalidation_demo.cpp)
+target_include_directories(chat_invalidation_demo PRIVATE include)
+target_link_libraries(chat_invalidation_demo PRIVATE chat_warnings)
+
+add_executable(chat_invalidation_debug tools/invalidation_demo.cpp)
+target_include_directories(chat_invalidation_debug PRIVATE include)
+target_compile_definitions(chat_invalidation_debug PRIVATE _GLIBCXX_DEBUG)
+target_link_libraries(chat_invalidation_debug PRIVATE chat_warnings)
+add_test(NAME chat_invalidation_detected
+         COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:chat_invalidation_debug>
+                 "-DEXPECT=singular iterator"
+                 -P ${CMAKE_SOURCE_DIR}/cmake/expect_runtime_failure.cmake)
 
 include(GoogleTest)
 gtest_discover_tests(chat_tests)

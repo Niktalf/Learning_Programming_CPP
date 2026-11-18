@@ -33,7 +33,10 @@ std::generator<int> counting_with_guard(int limit) {
 
 }  // namespace
 
-TEST(Generator, YieldsTasksInSubmissionOrder) {
+// Этап 7: очередь — дерево по ключу выдачи, и генератор, как и любой обход,
+// идёт в порядке выдачи: приоритет 9 раньше приоритета 0. До этапа 7 порядок
+// был порядком постановки.
+TEST(Generator, YieldsTasksInSelectionOrder) {
     taskq::TaskStore store;
     store.create_queue("build");
     store.submit("build", taskq::Task(1, "first", 0));
@@ -42,7 +45,7 @@ TEST(Generator, YieldsTasksInSubmissionOrder) {
     for (const taskq::Task& task : store.tasks_lazily("build")) {
         seen.push_back(task.to_string());
     }
-    EXPECT_EQ(seen, (std::vector<std::string>{"first", "second"}));
+    EXPECT_EQ(seen, (std::vector<std::string>{"second", "first"}));
 }
 
 TEST(Generator, UnknownQueueYieldsNothing) {

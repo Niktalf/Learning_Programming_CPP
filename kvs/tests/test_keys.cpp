@@ -53,18 +53,33 @@ TEST(Keys, LazinessWithSparseMatches) {
             return key.ends_with('0');
         },
         2);
-    EXPECT_EQ(keys, (std::vector<std::string>{"key:1000", "key:1010"}));
-    // 1000 … 1010 — одиннадцать вызовов, и ещё до следующего подходящего,
-    // 1020, — то же продвижение filter после последнего элемента, что и выше.
-    EXPECT_EQ(calls, 21);
+    ASSERT_EQ(keys.size(), 2u);
+    EXPECT_TRUE(keys[0].ends_with('0') && keys[1].ends_with('0'));
+    // Обход дошёл до второго подходящего и ещё до третьего — то же
+    // продвижение filter после последнего элемента, что и выше, — и
+    // остановился. Где в таблице третий подходящий ключ, зависит от хешей
+    // (этап 7: таблица — unordered_map), поэтому ожидаемое число вызовов
+    // считается обходом того же хранилища его собственным итератором.
+    int expected = 0;
+    int matches = 0;
+    for (const std::string& key : store) {
+        ++expected;
+        if (key.ends_with('0') && ++matches == 3) {
+            break;
+        }
+    }
+    EXPECT_EQ(calls, expected);
+    EXPECT_LT(calls, 100);
 }
 
 TEST(Keys, FilterBeforeTakeIsNotTakeBeforeFilter) {
     const kvs::Store store = hundred_keys();
-    // filter | take: два первых подходящих.
-    EXPECT_EQ(store.keys("key:105*", 2), (std::vector<std::string>{"key:1050", "key:1051"}));
-    // take | filter взял бы два первых ключа подряд — key:1000 и key:1001 —
-    // и не нашёл бы среди них ни одного подходящего.
+    // filter | take: два подходящих из десяти key:1050 … key:1059.
+    const auto keys = store.keys("key:105*", 2);
+    ASSERT_EQ(keys.size(), 2u);
+    EXPECT_TRUE(keys[0].starts_with("key:105") && keys[1].starts_with("key:105"));
+    // take | filter взял бы два первых ключа таблицы подряд и почти наверняка
+    // не нашёл бы среди них ни одного подходящего.
 }
 
 TEST(Keys, PatternAndLimit) {

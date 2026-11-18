@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <generator>
 #include <string>
 #include <vector>
@@ -34,7 +35,7 @@ std::generator<int> counting_with_guard(int limit) {
 
 }  // namespace
 
-TEST(Generator, YieldsMatchingKeysInOrder) {
+TEST(Generator, YieldsMatchingKeys) {
     kvs::Store store;
     for (const char* const key : {"user:1", "order:1", "user:2"}) {
         store.set(key, kvs::Value(std::string("v")));
@@ -43,6 +44,8 @@ TEST(Generator, YieldsMatchingKeysInOrder) {
     for (const std::string& key : store.keys_lazily("user:*")) {
         seen.push_back(key);
     }
+    // Порядок — порядок таблицы, а она с этапа 7 неупорядоченная.
+    std::ranges::sort(seen);
     EXPECT_EQ(seen, (std::vector<std::string>{"user:1", "user:2"}));
 }
 

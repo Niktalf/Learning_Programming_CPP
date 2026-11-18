@@ -6,7 +6,8 @@
 #include <cstdint>
 #include <functional>
 #include <generator>
-#include <map>
+#include <iterator>
+#include <unordered_map>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -22,6 +23,17 @@
 
 namespace kvs {
 
+// Этап 7: хеш для основной таблицы. Прозрачный (is_transparent): с ним и с
+// std::equal_to<> поиск в unordered_map принимает string_view и не строит
+// временную строку — то, что у std::map давал std::less<>. Разнородный
+// поиск в неупорядоченных контейнерах появился только в C++20.
+struct KeyHash {
+    using is_transparent = void;
+    [[nodiscard]] std::size_t operator()(std::string_view key) const noexcept {
+        return std::hash<std::string_view>{}(key);
+    }
+};
+
 // Хранилище параметризовано типом значения по одной практической причине:
 // в тестах вместо Value подставляется инструментированный тип, считающий
 // копирования и перемещения. Без этого утверждение «вставка временного
@@ -29,9 +41,27 @@ namespace kvs {
 //
 // Этап 5: требования к типу значения записаны концепцией StorableValue.
 // Подставить тип без size() или с бросающим перемещением — одна строка
-// диагностики, а не ошибка где-то в глубине std::map.
+// диагностики, а не ошибка где-то в глубине таблицы.
 template <StorableValue V>
 class BasicStore {
+    // Типы таблицы — в начале класса: их используют вложенные итераторы,
+    // а в объявлениях членов имя должно быть уже объявлено.
+    struct Entry {
+        V value;
+        RecordVersion version;
+    };
+
+    // Этап 7: основная таблица — std::unordered_map, выбрана по замерам
+    // (docs/benchmarks.md): на 10^6 ключей поиск в 11 раз быстрее std::map,
+    // вставка — в 3,7 раза. Порядка ключей у неё нет; KEYS, которому он
+    // нужен, сортирует свой результат сам, и это дешевле, чем платить за
+    // порядок в каждом GET. Худший случай — ключи с одним хешем — разобран
+    // там же; ответ на него — собственная хеш-функция этапа 8.
+    //
+    // KeyHash и std::equal_to<> включают разнородный поиск: методы
+    // принимают string_view и не создают временную строку на каждый вызов.
+    using Map = std::unordered_map<std::string, Entry, KeyHash, std::equal_to<>>;
+
 public:
     BasicStore() = default;
 
@@ -76,6 +106,37 @@ public:
         return old;
     }
 
+    // Этап 7: изменение значения на месте — для команд списка. До этапа 7
+    // RPUSH копировал список, дописывал элемент и записывал копию обратно:
+    // O(n) на каждую вставку. Теперь список меняется там, где лежит.
+    //
+    // growth — на сколько байт значение может вырасти; предел объёма
+    // проверяется по нему до изменения. fn получает V& и возвращает что
+    // угодно; результат modify — результат fn. После fn учёт объёма
+    // пересчитывается по фактическому размеру, и запись получает новую версию.
+    //
+    // Гарантия — та, что даёт fn: если fn при исключении оставляет значение
+    // прежним (push_front и push_back у deque так и делают), хранилище тоже
+    // прежнее. Ключа нет — KeyNotFoundError: создавать значение — дело set.
+    template <KeyLike K, class F>
+    auto modify(const K& key, std::size_t growth, F&& fn) {
+        const auto it = data_.find(key_view(key));
+        if (it == data_.end()) {
+            throw KeyNotFoundError(std::string(key_view(key)));
+        }
+        require_room(it->first, used_ + growth);
+        Entry& entry = it->second;
+        const std::size_t before = entry.value.size();
+        if constexpr (std::is_void_v<std::invoke_result_t<F, V&>>) {
+            std::invoke(std::forward<F>(fn), entry.value);   // бросок — ничего не учтено
+            account(entry, before);
+        } else {
+            auto result = std::invoke(std::forward<F>(fn), entry.value);
+            account(entry, before);
+            return result;
+        }
+    }
+
     // Этап 2: вместо сырого указателя — std::optional. Отсутствие значения
     // теперь выражено в типе, и вызывающий не может забыть о проверке:
     // разыменование пустого optional не проходит молча, как обращение
@@ -95,6 +156,19 @@ public:
             return std::nullopt;
         }
         return it->second.value;
+    }
+
+    // Этап 7: доступ к значению без копии — для команд, которые только
+    // читают. До этапа 7 GET, TYPE и LLEN шли через get и копировали
+    // значение целиком, а для списка это копия всех его элементов ради
+    // одного числа. Ссылка действительна, пока ключ не изменён и не удалён.
+    template <KeyLike K>
+    [[nodiscard]] std::optional<std::reference_wrapper<const V>> lookup(const K& key) const {
+        const auto it = data_.find(key_view(key));
+        if (it == data_.end()) {
+            return std::nullopt;
+        }
+        return std::cref(it->second.value);
     }
 
     template <KeyLike K>
@@ -132,8 +206,12 @@ public:
         // PTRDIFF_MAX стал бы отрицательным числом — нарушение предусловия
         // counted_iterator. KEYS * 18446744073709551615 иначе ронял бы
         // отладочную сборку, а в обычной был бы неопределённым поведением.
+        //
+        // Этап 7: конвейер идёт по самому хранилищу — его собственному
+        // итератору, — а не по data_ | views::keys. Код конвейера этапа 5 не
+        // изменился: ranges нужен только forward_iterator.
         const auto bounded = static_cast<std::ptrdiff_t>(std::min(limit, data_.size()));
-        auto selected = data_ | std::views::keys |
+        auto selected = *this |
                         std::views::filter([&predicate](const std::string& key) {
                             return std::invoke(predicate, std::string_view(key));
                         }) |
@@ -148,6 +226,11 @@ public:
         for (const std::string& key : selected) {
             result.push_back(key);
         }
+        // Этап 7: у unordered_map порядка нет, и ключи пришли в порядке
+        // корзин. Сортируется только результат — limit ключей, а не вся
+        // таблица. При limit меньше числа подходящих ключей какие именно
+        // попадут в ответ, не определено — как у KEYS и SCAN в Redis.
+        std::ranges::sort(result);
         return result;
     }
 
@@ -171,6 +254,120 @@ public:
                 co_yield key;
             }
         }
+    }
+
+    // --- Этап 7: собственный итератор по ключам -------------------------
+    //
+    // Прямой (forward) итератор: многопроходный, копируемый, сравнимый.
+    // Обёртка над итератором таблицы, которая отдаёт только ключ: значение
+    // и версия — подробности хранилища, снаружи их видно через get. Пять
+    // типов-членов — то, что смотрят std::iterator_traits и концепции:
+    // категория, тип значения, тип ссылки, указателя и разности.
+    //
+    // Итератор действителен, пока таблица не перестраивается: у
+    // unordered_map вставка, вызвавшая рехеширование, делает недействительными
+    // все итераторы (но не ссылки на элементы); удаление — только итератор
+    // удалённого. Поэтому обходить хранилище можно, только пока в него не
+    // пишут.
+    class Iterator {
+    public:
+        using iterator_category = std::forward_iterator_tag;
+        using value_type = std::string;
+        using difference_type = std::ptrdiff_t;
+        using reference = const std::string&;
+        using pointer = const std::string*;
+
+        // Итератор по умолчанию требуется концепцией forward_iterator: он
+        // сравним только с другим таким же и разыменовывать его нельзя.
+        Iterator() = default;
+
+        [[nodiscard]] reference operator*() const noexcept { return position_->first; }
+        [[nodiscard]] pointer operator->() const noexcept { return &position_->first; }
+
+        Iterator& operator++() noexcept {
+            ++position_;
+            return *this;
+        }
+
+        // Постфиксный инкремент возвращает копию до сдвига — это и отличает
+        // forward-итератор от input: старую копию можно разыменовать.
+        Iterator operator++(int) noexcept {
+            Iterator before = *this;
+            ++position_;
+            return before;
+        }
+
+        // operator!= компилятор выводит из == сам (C++20).
+        [[nodiscard]] friend bool operator==(const Iterator&, const Iterator&) = default;
+
+    private:
+        friend class BasicStore;
+        explicit Iterator(typename Map::const_iterator position) noexcept : position_(position) {}
+
+        typename Map::const_iterator position_{};
+    };
+
+    [[nodiscard]] Iterator begin() const noexcept { return Iterator(data_.begin()); }
+    [[nodiscard]] Iterator end() const noexcept { return Iterator(data_.end()); }
+
+    // --- Звёздочка этапа 7: ленивый просмотр со стражем ------------------
+    //
+    // scan(pattern) — диапазон ключей, подходящих под образец. Итератор —
+    // input, а не forward: он однопроходный и некопируемый, а следующий
+    // подходящий ключ ищет только при ++ — ничего не вычисляется заранее.
+    // Конец — отдельный тип-страж ScanEnd, а не второй итератор: «конец»
+    // здесь — не позиция, а условие «подходящих ключей больше нет», и
+    // итератор проверяет его сам. Так устроены диапазоны C++20; парный
+    // итератор конца пришлось бы хранить и сравнивать.
+    struct ScanEnd {};
+
+    class ScanIterator {
+    public:
+        using value_type = std::string;
+        using difference_type = std::ptrdiff_t;
+
+        ScanIterator(ScanIterator&&) noexcept = default;
+        ScanIterator& operator=(ScanIterator&&) noexcept = default;
+
+        [[nodiscard]] const std::string& operator*() const noexcept { return position_->first; }
+
+        ScanIterator& operator++() {
+            ++position_;
+            skip();
+            return *this;
+        }
+
+        // У input-итератора постфиксный инкремент может ничего не
+        // возвращать: копии нет, разыменовывать старую позицию нечем.
+        void operator++(int) { ++*this; }
+
+        [[nodiscard]] friend bool operator==(const ScanIterator& it, ScanEnd) noexcept {
+            return it.position_ == it.end_;
+        }
+
+    private:
+        friend class BasicStore;
+        ScanIterator(const Map& table, std::string_view pattern)
+            : position_(table.begin()), end_(table.end()), pattern_(pattern) {
+            skip();
+        }
+
+        // Сдвиг до ближайшего подходящего ключа — вся «ленивость» здесь.
+        void skip() {
+            while (position_ != end_ && !glob_match(pattern_, position_->first)) {
+                ++position_;
+            }
+        }
+
+        typename Map::const_iterator position_;
+        typename Map::const_iterator end_;
+        std::string_view pattern_;   // образец живёт у вызывающего, как и диапазон
+    };
+
+    // Диапазон смотрит в таблицу и в строку образца: оба обязаны пережить
+    // обход.
+    [[nodiscard]] auto scan(std::string_view pattern) const {
+        return std::ranges::subrange<ScanIterator, ScanEnd>(ScanIterator(data_, pattern), ScanEnd{});
     }
 
     // Этап 3: несколько ключей одной операцией с сильной гарантией. Либо
@@ -200,7 +397,7 @@ public:
     // обмен мог бросить, он перестал бы быть точкой невозврата: бросок на
     // середине обмена оставил бы таблицу от одного состояния, а счётчик
     // занятой памяти — от другого, и сильная гарантия молча выродилась бы
-    // в базовую. Обмен std::map и целых не бросает никогда — это и проверяет
+    // в базовую. Обмен таблиц и целых не бросает никогда — это и проверяет
     // тест Guarantee.SwapIsNoexcept.
     friend void swap(BasicStore& a, BasicStore& b) noexcept {
         a.data_.swap(b.data_);
@@ -242,16 +439,15 @@ public:
     }
 
 private:
-    // std::less<> включает разнородный поиск: методы принимают string_view
-    // и не создают временную строку на каждый вызов.
-    struct Entry {
-        V value;
-        RecordVersion version;
-    };
-    using Map = std::map<std::string, Entry, std::less<>>;
-
     [[nodiscard]] static std::size_t footprint(const std::string& key, const V& value) noexcept {
         return key.size() + value.size();
+    }
+
+    // Учёт после изменения на месте: объём по фактическому размеру и новая
+    // версия записи. Только арифметика и короткая строка автора.
+    void account(Entry& entry, std::size_t before) {
+        used_ = used_ - before + entry.value.size();
+        entry.version = RecordVersion{entry.version.generation + 1, ++clock_, "local"};
     }
 
     void require_room(const std::string& key, std::size_t needed) const {

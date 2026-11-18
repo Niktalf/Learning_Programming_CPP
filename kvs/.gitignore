@@ -1,2 +1,9 @@
 .idea
 *build*
+build/
+build-*/
+.cache/
+compile_commands.json
+*.o
+*.log
+.cache/clangd/

@@ -150,7 +150,9 @@ TEST(Commands, KeysAndVersionGoThroughTheRegistry) {
     Store store;
     run(store, "MSET user:1 a user:2 b other c");
     EXPECT_EQ(run(store, "KEYS user:*").text, std::string("user:1\nuser:2"));
-    EXPECT_EQ(run(store, "KEYS user:* 1").text, std::string("user:1"));
+    // С пределом меньше числа подходящих — какой-то один из них: порядка в
+    // таблице с этапа 7 нет.
+    EXPECT_TRUE(run(store, "KEYS user:* 1").text.starts_with("user:"));
     EXPECT_EQ(run(store, "KEYS nothing*").text, std::string("(empty)"));
     EXPECT_TRUE(run(store, "VERSION other").text.starts_with("generation=1 "));
 }

@@ -26,7 +26,10 @@ void print_help() {
   EXISTS <key>               1 or 0
   TYPE <key>                 type of the value
   INCR <key> [step]          increment an integer
+  LPUSH <key> <item>         prepend to a list
   RPUSH <key> <item>         append to a list
+  LPOP <key> / RPOP <key>    take from the head / the tail
+  LRANGE <key> <from> <to>   items by index, negative from the end: 0 -1 is all
   LLEN <key>                 length of a list
   KEYS [pattern] [limit]     list keys matching a glob, * and ?
   VERSION <key>              generation and timestamp of the record
@@ -113,7 +116,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::println("KVS, stage 6");
+    std::println("KVS, stage 7");
     print_help();
 
     std::string raw;   // объявлена до цикла: в неё читает std::getline

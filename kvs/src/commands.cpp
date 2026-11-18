@@ -36,24 +36,25 @@ namespace {
 }
 
 // Значение ключа или исключение — одна точка, где отсутствие ключа
-// превращается в ошибку.
-[[nodiscard]] Value require(const Store& store, std::string_view key) {
-    auto value = store.get(key);
+// превращается в ошибку. Этап 7: ссылка, а не копия (Store::lookup) — до
+// этапа 7 каждый GET копировал значение целиком.
+[[nodiscard]] const Value& require(const Store& store, std::string_view key) {
+    const auto value = store.lookup(key);
     if (!value) {
         throw KeyNotFoundError(std::string(key));
     }
-    return std::move(*value);
+    return value->get();
 }
 
 // Строка ключа или TypeMismatchError. Отсутствующий ключ — пустое значение.
 [[nodiscard]] std::string text_of(const Store& store, std::string_view key) {
-    const auto value = store.get(key);
+    const auto value = store.lookup(key);
     if (!value) {
         return {};
     }
-    const auto* const text = value->as<StringValue>();
+    const auto* const text = value->get().as<StringValue>();
     if (text == nullptr) {
-        throw TypeMismatchError(std::string(key), "string", std::string(value->type_name()));
+        throw TypeMismatchError(std::string(key), "string", std::string(value->get().type_name()));
     }
     return text->data();
 }
@@ -89,14 +90,14 @@ Response type_of(Store& store, std::string_view key) {
 // 2» реестр выводит из сигнатуры сам.
 Response increment(Store& store, std::string_view key, std::optional<std::int64_t> step) {
     const std::int64_t by = step.value_or(1);
-    const auto current = store.get(key);
+    const auto current = store.lookup(key);
     if (!current) {
         store.set(std::string(key), Value(by));
         return ok(std::format("{}", by));
     }
-    const IntValue* const number = current->as<IntValue>();
+    const IntValue* const number = current->get().as<IntValue>();
     if (number == nullptr) {
-        throw TypeMismatchError(std::string(key), "int", std::string(current->type_name()));
+        throw TypeMismatchError(std::string(key), "int", std::string(current->get().type_name()));
     }
     const std::int64_t next = checked_add(key, number->data(), by);
     store.set(std::string(key), Value(next));
@@ -112,35 +113,110 @@ Response set_many(Store& store, Rest tokens) {
     std::vector<std::pair<std::string, Value>> pairs;
     pairs.reserve(tokens.tokens.size() / 2);
     for (std::size_t i = 0; i < tokens.tokens.size(); i += 2) {
-        pairs.emplace_back(std::string(tokens.tokens[i]), Value(tokens.tokens[i + 1]));
+        // Этап 7: emplace_back из двух string_view, а не из временных
+        // std::string и Value. С временными пара строилась бы из них
+        // перемещением — ещё два объекта и два перемещения на каждую пару;
+        // так строка и значение рождаются прямо в элементе вектора
+        // (tests/test_emplace.cpp показывает разницу на Traced).
+        pairs.emplace_back(tokens.tokens[i], tokens.tokens[i + 1]);
     }
     store.mset(pairs);
     return ok("OK");
 }
 
-// Список меняется в копии и записывается обратно через set: учёт памяти и
-// проверка предела остаются в одном месте, а бросок оставляет хранилище
-// прежним. Изменение на месте появится на этапе 7.
-Response push_back(Store& store, std::string_view key, std::string_view item) {
-    auto current = store.get(key);
-    Value list = current ? std::move(*current) : Value(std::make_unique<ListValue>());
-    ListValue* const items = list.as<ListValue>();
+// --- Этап 7: списки ------------------------------------------------------
+//
+// Список меняется на месте, через Store::modify: до этапа 7 RPUSH копировал
+// весь список ради одного элемента. Ключа нет — новый список записывается
+// через set одной операцией: создать пустой и потом дописать — две записи, и
+// если вторая упрётся в предел памяти, останется пустой список.
+
+[[nodiscard]] ListValue& as_list(std::string_view key, Value& value) {
+    ListValue* const items = value.as<ListValue>();
     if (items == nullptr) {
-        throw TypeMismatchError(std::string(key), "list", std::string(list.type_name()));
+        throw TypeMismatchError(std::string(key), "list", std::string(value.type_name()));
     }
-    items->push_back(std::string(item));
-    const std::size_t length = items->length();
-    store.set(std::string(key), std::move(list));
-    return ok(std::format("{}", length));
+    return *items;
 }
 
-Response list_length(Store& store, std::string_view key) {
-    const Value value = require(store, key);
+[[nodiscard]] const ListValue& as_list(std::string_view key, const Value& value) {
     const ListValue* const items = value.as<ListValue>();
     if (items == nullptr) {
         throw TypeMismatchError(std::string(key), "list", std::string(value.type_name()));
     }
-    return ok(std::format("{}", items->length()));
+    return *items;
+}
+
+enum class End { Front, Back };
+
+Response push(Store& store, std::string_view key, std::string_view item, End end) {
+    if (!store.contains(key)) {
+        auto created = std::make_unique<ListValue>();
+        created->push_back(std::string(item));
+        store.set(std::string(key), Value(std::move(created)));
+        return ok("1");
+    }
+    const std::size_t length = store.modify(key, item.size(), [&](Value& value) {
+        ListValue& items = as_list(key, value);
+        if (end == End::Front) {
+            items.push_front(std::string(item));
+        } else {
+            items.push_back(std::string(item));
+        }
+        return items.length();
+    });
+    return ok(std::format("{}", length));
+}
+
+// Снятие последнего элемента удаляет ключ, как в Redis: пустых списков в
+// хранилище не бывает, и TYPE пустого списка не нужно придумывать.
+Response pop(Store& store, std::string_view key, End end) {
+    if (!store.contains(key)) {
+        return ok("(nil)");
+    }
+    auto [item, now_empty] = store.modify(key, 0, [&](Value& value) {
+        ListValue& items = as_list(key, value);
+        std::string taken = end == End::Front ? items.pop_front() : items.pop_back();
+        return std::pair{std::move(taken), items.empty()};
+    });
+    if (now_empty) {
+        static_cast<void>(store.del(key));
+    }
+    return ok(std::move(item));
+}
+
+Response push_front(Store& store, std::string_view key, std::string_view item) {
+    return push(store, key, item, End::Front);
+}
+
+Response push_back(Store& store, std::string_view key, std::string_view item) {
+    return push(store, key, item, End::Back);
+}
+
+Response pop_front(Store& store, std::string_view key) {
+    return pop(store, key, End::Front);
+}
+
+Response pop_back(Store& store, std::string_view key) {
+    return pop(store, key, End::Back);
+}
+
+Response list_length(Store& store, std::string_view key) {
+    return ok(std::format("{}", as_list(key, require(store, key)).length()));
+}
+
+// LRANGE key start stop: индексы как у Redis — отрицательные от конца,
+// LRANGE key 0 -1 — весь список.
+Response list_range(Store& store, std::string_view key, std::int64_t start, std::int64_t stop) {
+    const auto value = store.lookup(key);
+    if (!value) {
+        return ok("(empty)");
+    }
+    const std::vector<std::string> items = as_list(key, value->get()).range(start, stop);
+    if (items.empty()) {
+        return ok("(empty)");
+    }
+    return ok(std::ranges::to<std::string>(items | std::views::join_with('\n')));
 }
 
 Response list_keys(Store& store, std::optional<std::string_view> pattern,
@@ -202,7 +278,11 @@ const CommandRegistry<Store>& commands() {
             .add("TYPE", Effect::Reads, type_of)
             .add("INCR", Effect::Writes, increment)
             .add("MSET", Effect::Writes, set_many)
+            .add("LPUSH", Effect::Writes, push_front)
             .add("RPUSH", Effect::Writes, push_back)
+            .add("LPOP", Effect::Writes, pop_front)
+            .add("RPOP", Effect::Writes, pop_back)
+            .add("LRANGE", Effect::Reads, list_range)
             .add("LLEN", Effect::Reads, list_length)
             .add("KEYS", Effect::Reads, list_keys)
             .add("VERSION", Effect::Reads, version_of)

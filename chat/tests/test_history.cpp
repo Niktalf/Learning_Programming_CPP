@@ -82,3 +82,52 @@ TEST(History, HugeLimitIsClampedNotNegative) {
     ASSERT_TRUE(all.has_value());
     EXPECT_EQ(all->size(), 1000u);
 }
+
+// --- Этап 7: ограниченная история ---------------------------------------
+
+TEST(History, OldestMessagesAreEvicted) {
+    chat::ChatStore store(3);
+    store.create_room("#general");
+    for (int i = 0; i < 5; ++i) {
+        store.post("#general", chat::make_text("alice", "m" + std::to_string(i)));
+    }
+    const auto& history = store.history("#general")->get();
+    EXPECT_EQ(history.size(), 3u);
+    EXPECT_EQ(history.evicted(), 2u);
+    EXPECT_EQ(history.front()->to_string(), std::string("m2"));
+}
+
+TEST(History, NumbersStayAbsoluteAfterEviction) {
+    // Номер сообщения — его место во всей истории комнаты, а не в буфере:
+    // /type #general 3 после вытеснения двух первых — всё ещё m3.
+    chat::ChatStore store(3);
+    store.create_room("#general");
+    for (int i = 0; i < 5; ++i) {
+        store.post("#general", chat::make_text("alice", "m" + std::to_string(i)));
+    }
+    EXPECT_FALSE(store.message_at("#general", 1).has_value());   // вытеснено
+    EXPECT_EQ(store.message_at("#general", 3)->get()->to_string(), std::string("m3"));
+    EXPECT_FALSE(store.message_at("#general", 5).has_value());   // ещё не написано
+    const auto all = store.history_where("#general", [](const chat::MessagePtr&) { return true; }, 10);
+    EXPECT_EQ(indices(*all), (std::vector<std::size_t>{2, 3, 4}));
+}
+
+TEST(History, RoomUsesTheStoreCapacity) {
+    chat::ChatStore store(2);
+    store.create_room("#a");
+    EXPECT_EQ(store.history("#a")->get().capacity(), 2u);
+    EXPECT_EQ(chat::ChatStore().history_capacity(), chat::ChatStore::default_history_capacity);
+}
+
+TEST(History, BroadcastIntoFullHistoriesIsStillAllOrNothing) {
+    // Полная история вытесняет присваиванием; фаза фиксации рассылки от
+    // этого бросать не стала — та же сильная гарантия этапа 3.
+    chat::ChatStore store(2);
+    store.create_room("#a");
+    store.create_room("#b");
+    for (int i = 0; i < 3; ++i) {
+        store.post_many({"#a", "#b"}, chat::make_text("alice", "m" + std::to_string(i)));
+    }
+    EXPECT_EQ(store.history("#a")->get().back()->to_string(), std::string("m2"));
+    EXPECT_EQ(store.history("#b")->get().front()->to_string(), std::string("m1"));
+}

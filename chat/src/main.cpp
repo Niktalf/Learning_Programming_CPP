@@ -109,7 +109,7 @@ int main(int argc, char* argv[]) {
     // Реестр пуст, ник не может быть занят.
     chat::Session session = server->login(arguments->nick);
 
-    std::println("CHAT, stage 6, you are {}", session.nick);
+    std::println("CHAT, stage 7, you are {}", session.nick);
     print_help();
 
     std::string raw;   // объявлена до цикла: в неё читает std::getline

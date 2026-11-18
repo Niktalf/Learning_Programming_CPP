@@ -1,4 +1,4 @@
-# KVS — эталонная реализация, этапы 1–6
+# KVS — эталонная реализация, этапы 1–7
 
 Этап 1 — каркас проекта и доменный тип значения: правило нуля, правило пяти на
 учебном классе, хранилище-заглушка, обход с лямбдой, тесты со счётчиками
@@ -26,6 +26,11 @@
 Этап 6 — реестр команд: `function_traits`, разбор аргументов через
 `if constexpr` по типам параметров обработчика, концепция `CommandHandler`.
 Добавить команду — одна строка регистрации; `parse` и `visit` удалены.
+
+Этап 7 — контейнеры по замерам: список на `std::deque` с командами LPUSH,
+RPUSH, LPOP, RPOP, LRANGE, основная таблица на `std::unordered_map`, оба
+выбора — по цифрам `docs/benchmarks.md`; собственный forward-итератор
+хранилища и ленивый input-итератор со стражем.
 
 ## Стандарт языка
 
@@ -319,3 +324,45 @@ cmake --build build-asan --target kvs_cycle_leak
 `APPEND`, `STRLEN`, `GETSET` — по одной строке регистрации. `GETSET` — одна
 операция хранилища `exchange`, а не `get` и `set`: на этапе 11 пара была бы
 гонкой.
+
+## Этап 7: контейнеры по замерам
+
+Цифры и выводы — `docs/benchmarks.md`, итераторы и инвалидация —
+`docs/iterators.md`. Коротко:
+
+- список — `std::deque`: в 2–10 раз быстрее `std::list` и в тысячи раз —
+  `std::vector` на профиле «вставки в оба конца, редкое чтение по индексу»;
+  команды LPUSH, RPUSH, LPOP, RPOP, LRANGE, список меняется на месте
+  (`Store::modify`), а не копируется ради одного элемента;
+- основная таблица — `std::unordered_map`: поиск на 10^6 ключей в 11 раз
+  быстрее `std::map`. KEYS сортирует свой результат сам; худший случай —
+  ключи с одним хешем — замерен и разобран;
+- `Store::Iterator` — forward-итератор по ключам,
+  `static_assert(std::forward_iterator<...>)`; хранилище работает в
+  range-based for, алгоритмах и конвейерах ranges;
+- читающие команды больше не копируют значение (`Store::lookup`), MSET
+  строит пары через `emplace_back`; разбор emplace и try_emplace —
+  `tests/test_emplace.cpp`;
+- `operator[]` на ассоциативных контейнерах в рабочем коде нет — проверено
+  поиском, результат в `docs/iterators.md`.
+
+Замеры собираются вместе со всем проектом, а запускаются из Release:
+
+```bash
+cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --target kvs_bench_lists kvs_bench_tables
+./build-release/kvs_bench_lists && ./build-release/kvs_bench_tables
+```
+
+## Этап 7: звёздочка
+
+`store.scan(pattern)` — однопроходный ленивый итератор с отдельным типом
+конца `ScanEnd`; конвейеры этапа 5 работают на нём без изменений.
+
+## Этап 7: домашнее задание
+
+`tools/invalidation_demo.cpp` — удаление внутри обхода. У `unordered_map`
+ошибку видит санитайзер адресов, у `deque` — только отладочный режим
+libstdc++ (`kvs_invalidation_debug`, тест `kvs_invalidation_detected`).
+Вывод обоих, исправление `it = c.erase(it)` и правила инвалидации deque —
+в `docs/iterators.md`.

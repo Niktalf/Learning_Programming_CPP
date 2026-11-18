@@ -78,8 +78,10 @@ TEST(List, CommandWithNamedArguments) {
     }
     EXPECT_EQ(taskq::handle(service, "LIST build prio>=7 type=number").text,
               std::string("id=3 prio=8 2"));
+    // Этап 7: LIST показывает очередь в порядке выдачи — так, как её
+    // увидит POLL: prio=9, prio=8, prio=7, затем prio=0.
     EXPECT_EQ(taskq::handle(service, "LIST build limit=2").text,
-              std::string("id=1 prio=7 make\nid=2 prio=0 1"));
+              std::string("id=4 prio=9 test\nid=3 prio=8 2"));
     EXPECT_EQ(taskq::handle(service, "LIST build type=binary").text, std::string("(empty)"));
     EXPECT_EQ(taskq::handle(service, "LIST build prio>=10").text,
               std::string("ERR priority must be 0..9: 10 (usage: LIST <queue> [prio>=0..9] "

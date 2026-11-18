@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -88,7 +89,9 @@ TEST(Store, ExplicitMoveDoesNotCopy) {
     EXPECT_EQ(Tracked::copies(), 0);
 }
 
-TEST(Store, ForEachVisitsEveryEntryInKeyOrder) {
+// Этап 7: таблица — unordered_map, и порядка обхода больше нет: до этапа 7
+// тест проверял порядок ключей, теперь — что каждый ключ посещён один раз.
+TEST(Store, ForEachVisitsEveryEntryOnce) {
     Store store;
     store.set("b", Value(std::string("2")));
     store.set("a", Value(std::string("1")));
@@ -100,6 +103,7 @@ TEST(Store, ForEachVisitsEveryEntryInKeyOrder) {
     });
 
     ASSERT_EQ(seen.size(), 3u);
+    std::ranges::sort(seen);
     EXPECT_EQ(seen[0], std::string("a"));
     EXPECT_EQ(seen[1], std::string("b"));
     EXPECT_EQ(seen[2], std::string("c"));

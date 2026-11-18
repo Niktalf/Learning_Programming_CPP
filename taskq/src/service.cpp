@@ -136,12 +136,19 @@ Response Service::submit_all(const std::vector<Batch::Item>& items) {
     std::map<TaskId, State> added;
     TaskId id = next_id_;
     for (const Batch::Item& item : items) {
-        tasks.emplace_back(item.queue, Task(id, make_payload(item.body), item.priority));
+        // Этап 7: пара строится на месте — piecewise_construct передаёт
+        // аргументы конструкторам обоих полей, и задача рождается прямо в
+        // элементе вектора, без временного Task и его перемещения.
+        tasks.emplace_back(std::piecewise_construct, std::forward_as_tuple(item.queue),
+                           std::forward_as_tuple(id, make_payload(item.body), item.priority));
         added.emplace(id, State::Pending);
         ++id;
     }
 
-    store_.submit_batch(tasks);
+    // Этап 7: пакет отдаётся хранилищу целиком, перемещением. До этапа 7
+    // submit_batch принимал const& и копировал каждую задачу — то есть клон
+    // тела на каждый SUBMIT ради вектора, который тут же уничтожался.
+    store_.submit_batch(std::move(tasks));
     states_.merge(added);
     for (TaskId submitted = next_id_; submitted < id; ++submitted) {
         record(submitted, "-", State::Pending);
@@ -330,9 +337,19 @@ Response Service::add_worker(WorkerName worker) {
     // make_shared: воркер и контрольный блок — одна аллокация. Обратная
     // сторона: память блока освободится, только когда умрут и все weak_ptr
     // на него — то есть когда завершатся аренды, которые этот воркер держал.
+    //
+    // Этап 7: аргументы try_emplace вычисляются до вызова, и до этапа 7
+    // make_shared выделял память и строил воркера даже для уже
+    // зарегистрированного имени — чтобы тут же его выбросить. Теперь
+    // lower_bound находит место, и воркер строится, только если его нет;
+    // emplace_hint вставляет в найденное место без второго поиска.
+    const auto place = workers_.lower_bound(worker.name);
+    if (place != workers_.end() && place->first == worker.name) {
+        return Response{true, "OK, already registered"};
+    }
     const std::string name(worker.name);
-    const bool created = workers_.try_emplace(name, std::make_shared<Worker>(name)).second;
-    return Response{true, created ? "OK" : "OK, already registered"};
+    workers_.emplace_hint(place, name, std::make_shared<Worker>(name));
+    return Response{true, "OK"};
 }
 
 Response Service::gone(WorkerName worker) {
@@ -389,17 +406,12 @@ Response Service::delay(TaskId id, std::chrono::seconds by) {
 // transition_to (не бросает). Запись в журнал — после фиксации, как и у
 // остальных команд.
 Response Service::purge(QueueName queue) {
-    if (!store_.contains(queue.name)) {
-        throw UnknownQueueError(std::string(queue.name));
+    // Этап 7: обход одной очереди — её представлением, в порядке выдачи.
+    // Нет очереди — view бросает UnknownQueueError.
+    for (const Task& task : store_.view(queue.name)) {
+        require_transition(task.id(), State::Cancelled);
     }
-    store_.for_each_queue([&](const std::string& name, const Queue& tasks) {
-        if (name == queue.name) {
-            for (const Task& task : tasks) {
-                require_transition(task.id(), State::Cancelled);
-            }
-        }
-    });
-    const Queue removed = store_.purge(queue.name);
+    const std::vector<Task> removed = store_.purge(queue.name);
     for (const Task& task : removed) {
         transition_to(task.id(), State::Cancelled);
     }
