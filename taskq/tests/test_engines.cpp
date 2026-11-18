@@ -8,7 +8,7 @@
 #include <cstddef>
 #include <string>
 
-#include "taskq/engine.hpp"
+#include "taskq/engines.hpp"
 #include "taskq/task_store.hpp"
 
 using taskq::EngineKind;
@@ -67,7 +67,7 @@ TEST_P(Engines, DelayedTasksAreFoundByIdToo) {
     TaskStore store(GetParam());
     store.create_queue("q");
     store.submit("q", Task(1, "later"));
-    const auto now = std::chrono::system_clock::now();
+    const taskq::Instant now{};
     ASSERT_TRUE(store.delay(1, now + std::chrono::hours(1)));
     ASSERT_TRUE(store.find(1));
     EXPECT_EQ(store.find(1)->get().to_string(), "later");

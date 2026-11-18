@@ -1,0 +1,36 @@
+@startuml sequence_set_after
+' Этап 9: SET k v после рефакторинга. Журнал — порт ILogSink: в работе это
+' AppendOnlyLog, в тестах — MemoryLog. Учёт объёма — MemoryBudget, время
+' записи — IClock.
+autonumber
+actor Клиент
+participant "main" as Main
+participant "Server" as Server
+participant "RequestCache" as Cache
+participant "CommandRegistry" as Registry
+participant "set_value()" as Handler
+participant "BasicStore" as Store
+participant "MemoryBudget" as Budget
+participant "IClock" as Clock
+participant "IStorageEngine" as Engine
+participant "ILogSink" as Sink
+
+== запуск ==
+Main -> Main : make_server(Config)\n(движок, журнал, часы — здесь)
+== команда ==
+Клиент -> Main : строка «SET k v»
+Main -> Server : handle(line)
+Server -> Cache : get(line)
+Cache -> Registry : bind(tokenize(line))
+Cache --> Server : shared_ptr<Request>
+Server -> Handler : request->command()(store_)
+Handler -> Store : set("k", Value("v"))
+Store -> Budget : require(key, after(removed, added))
+Store -> Clock : now()
+Store -> Engine : put("k", Entry{value, version, touched})
+Store -> Budget : commit(used)
+Handler --> Server : Reply::ok()
+Server -> Sink : append("SET k v")
+Server --> Main : Response
+Main --> Клиент : OK
+@enduml

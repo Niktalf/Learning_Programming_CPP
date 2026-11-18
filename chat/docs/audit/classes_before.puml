@@ -1,0 +1,76 @@
+@startuml classes_before
+' Этап 9: классы CHAT на теге v08 — до рефакторинга. Показаны связи, а не
+' поля. Красным — связи, нарушающие принципы (docs/audit.md).
+skinparam classAttributeIconSize 0
+hide empty members
+
+package "консольный клиент" {
+  class main <<program>>
+}
+
+package "ядро" {
+  class Server {
+    +Server(path)
+    +Server(EngineKind, optional<path>)
+    +login / logout / handle
+  }
+  class Session
+  class Context {
+    store, session
+    AppendOnlyLog* journal
+  }
+  class "BasicChatStore<M>" as Store #FFDDDD {
+    комнаты, участники, рассылка
+    история, индекс по времени
+    seq_ и часы std::function
+  }
+  class "CommandRegistry<Context>" as Registry
+  class "commands.cpp: ok / joined / lines_of" as Format <<functions>> #FFDDDD
+  class "reason_of()" as ReasonOf <<function>> #FFDDDD
+  abstract class IMessage #FFDDDD {
+    author_, at_, id_
+  }
+  class TextMessage
+  class SystemMessage
+  class ReactionMessage
+  class User
+}
+
+package "engine.hpp — интерфейс и реализации в одном заголовке" #FFEEEE {
+  interface "IChatStore<Room>" as IData
+  class "StdChatStore" as StdData
+  class "TableChatStore" as TableData
+  class ChainedTable
+  class OpenTable
+  class "default_engine_kind()" as EnvKind <<getenv>>
+  class "make_chat_store<Room>()" as MakeData
+}
+
+package "файлы" {
+  class AppendOnlyLog
+}
+
+main --> Server : создаёт с путём и движком
+main --> Store : DEMO: server.store()
+Server *-- Store
+Server *-[#red]- "0..1" AppendOnlyLog : открывает по пути
+Server ..> ReasonOf
+Server ..> Registry
+Registry ..> Context
+Context -[#red]-> AppendOnlyLog : конкретный класс
+Registry ..> Format
+Store *-- IData
+Store .[#red].> MakeData : создаёт данные сам
+Store .[#red].> EnvKind : Store()
+MakeData ..> StdData
+MakeData ..> TableData
+IData <|.. StdData
+IData <|.. TableData
+TableData *-- ChainedTable
+TableData *-- OpenTable
+Store o-- User
+Store *-- IMessage : история
+IMessage <|-[#red]- TextMessage : наследует данные
+IMessage <|-[#red]- SystemMessage : наследует данные
+IMessage <|-[#red]- ReactionMessage : наследует данные
+@enduml

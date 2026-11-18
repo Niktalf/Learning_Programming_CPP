@@ -1,12 +1,12 @@
 #pragma once
 
-#include <filesystem>
-#include <optional>
+#include <memory>
 #include <string>
+#include <utility>
 
 #include "chat/chat_store.hpp"
 #include "chat/commands.hpp"
-#include "chat/log.hpp"
+#include "chat/journal.hpp"
 
 namespace chat {
 
@@ -18,29 +18,25 @@ namespace chat {
 // вызывать сетевая сессия, на этапе 16 — обработчик HTTP-запроса.
 class Server {
 public:
-    Server() = default;
-
-    // С журналом: каждое отправленное сообщение дописывается в файл одной
-    // строкой «комнаты<TAB>автор<TAB>текст». Это архив, как логи IRC-канала;
-    // история при перезапуске из него не восстанавливается.
+    // Этап 9: зависимости — снаружи. Хранилище приходит готовым (данные,
+    // ёмкость истории, часы), журнал — портом ILogSink (journal.hpp). Сервер
+    // не знает ни файлов, ни путей, ни движков; собирает его точка сборки
+    // make_server (compose.hpp). До этапа 9 конструкторы принимали путь и
+    // имя движка и сами открывали файл (docs/audit.md, запись 4).
     //
-    // Конструктор бросает, если файл не открылся. Деструктор Server тогда не
-    // вызовется, но уже построенное хранилище разрушится корректно.
-    explicit Server(const std::filesystem::path& log) : log_(std::in_place, log) {}
-
-    // Этап 8: движок хранилища — параметр запуска (chat_cli --engine=hash).
-    explicit Server(EngineKind engine, const std::optional<std::filesystem::path>& log = std::nullopt)
-        : store_(engine) {
-        if (log) {
-            log_.emplace(*log);
-        }
-    }
+    // Журнал — архив отправленных сообщений, строка «комнаты<TAB>автор<TAB>
+    // текст», как логи IRC-канала; история при перезапуске из него не
+    // восстанавливается.
+    explicit Server(ChatStore store = ChatStore(), std::unique_ptr<ILogSink> log = nullptr)
+        : store_(std::move(store)), log_(std::move(log)) {}
 
     // Вход и выход пользователя. Реестр владеет пользователем, пока тот в
     // чате; logout — это то, что на этапе 15 сделает отключение клиента.
     [[nodiscard]] Session login(std::string nick);
     void logout(const Session& session);
 
+    // Каждая команда — и активность пользователя: сервер отмечает её в
+    // хранилище до разбора (этап 9, /whois).
     [[nodiscard]] Response handle(Session& session, std::string line);
 
     [[nodiscard]] ChatStore& store() noexcept { return store_; }
@@ -48,7 +44,7 @@ public:
 
 private:
     ChatStore store_;
-    std::optional<AppendOnlyLog> log_;   // пусто — журнал не ведётся
+    std::unique_ptr<ILogSink> log_;   // пусто — журнал не ведётся
 };
 
 }  // namespace chat

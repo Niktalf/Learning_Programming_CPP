@@ -4,6 +4,8 @@
 #include <fstream>
 #include <string_view>
 
+#include "taskq/journal.hpp"
+
 namespace taskq {
 
 // Журнал переходов — первый в проекте класс над внешним ресурсом.
@@ -20,7 +22,9 @@ namespace taskq {
 // поле-объекте, а не в сыром дескрипторе.
 //
 // На этапе 15 по тому же образцу будут жить сокеты и сессии.
-class AppendOnlyLog {
+// Этап 9: файловая реализация порта ILogSink (journal.hpp). Создаёт её
+// точка сборки (src/compose.cpp).
+class AppendOnlyLog final : public ILogSink {
 public:
     explicit AppendOnlyLog(const std::filesystem::path& path);
 
@@ -30,11 +34,11 @@ public:
     AppendOnlyLog& operator=(const AppendOnlyLog&) = delete;
     AppendOnlyLog(AppendOnlyLog&&) noexcept = default;
     AppendOnlyLog& operator=(AppendOnlyLog&&) noexcept = default;
-    ~AppendOnlyLog() = default;
+    ~AppendOnlyLog() override = default;
 
     // Запись одной строки. Сбрасывается на диск сразу: журнал, теряющий
     // хвост при падении процесса, бесполезен. Ошибка записи — TaskQError.
-    void append(std::string_view record);
+    void append(std::string_view record) override;
 
 private:
     std::ofstream out_;

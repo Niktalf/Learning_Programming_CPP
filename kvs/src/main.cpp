@@ -1,16 +1,15 @@
 #include <charconv>
 #include <cstddef>
-#include <exception>
 #include <cstdio>
-#include <format>
+#include <exception>
 #include <iostream>
-#include <print>
 #include <optional>
+#include <print>
 #include <string>
 #include <string_view>
 #include <utility>
 
-#include "kvs/server.hpp"
+#include "kvs/compose.hpp"
 
 namespace {
 
@@ -38,6 +37,7 @@ void print_help() {
   APPEND <key> <suffix>      append to a string, returns the new length
   STRLEN <key>               length of a string, 0 if absent
   GETSET <key> <value>       store a value, return the previous one
+  IDLETIME <key>             seconds since the key was last written
   MEMORY                     used bytes and the limit
   DEMO                       capture by reference vs by value
   HELP / QUIT
@@ -76,11 +76,14 @@ void run_capture_demo(const kvs::Store& store) {
 // Разбор аргументов. Неизвестный аргумент — отказ запуска, а не молчаливое
 // игнорирование: опечатка в «--maxmemroy» иначе дала бы хранилище без
 // предела, и заметил бы это только тот, у кого кончилась память.
-[[nodiscard]] std::optional<kvs::Server::Options> parse_arguments(int argc, char* argv[]) {
+// Этап 9: движок по умолчанию — из KVS_ENGINE, как и у тестов; окружение
+// читает консольный клиент, а не ядро.
+[[nodiscard]] std::optional<kvs::Config> parse_arguments(int argc, char* argv[]) {
     constexpr std::string_view memory_prefix = "--maxmemory=";
     constexpr std::string_view log_prefix = "--log=";
     constexpr std::string_view engine_prefix = "--engine=";
-    kvs::Server::Options options;
+    kvs::Config options;
+    options.engine = kvs::default_engine_kind();
     for (int i = 1; i < argc; ++i) {
         const std::string_view argument = argv[i];
         if (argument.substr(0, memory_prefix.size()) == memory_prefix) {
@@ -120,13 +123,13 @@ int main(int argc, char* argv[]) {
     // внутри try, а цикл команд снаружи.
     std::optional<kvs::Server> server;
     try {
-        server.emplace(*options);
+        server.emplace(kvs::make_server(*options));
     } catch (const std::exception& e) {
         std::println(stderr, "cannot start: {}", e.what());
         return 1;
     }
 
-    std::println("KVS, stage 8, engine {}", server->store().engine_name());
+    std::println("KVS, stage 9, engine {}", server->store().engine_name());
     print_help();
 
     std::string raw;   // объявлена до цикла: в неё читает std::getline
@@ -144,12 +147,6 @@ int main(int argc, char* argv[]) {
         }
         if (view == "DEMO") {
             run_capture_demo(server->store());
-            continue;
-        }
-        if (view == "MEMORY") {
-            const auto limit = server->store().memory_limit();
-            std::println("used {} bytes, limit {}", server->store().used_bytes(),
-                         limit ? std::format("{} bytes", *limit) : std::string("none"));
             continue;
         }
         // Вся обработка ошибок команд — внутри handle. Здесь нет ни одного

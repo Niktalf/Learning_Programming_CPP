@@ -1,13 +1,10 @@
 #pragma once
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <random>
 #include <string>
 #include <string_view>
@@ -15,61 +12,15 @@
 #include <utility>
 
 #include "chat/chained_table.hpp"
+#include "chat/chat_data.hpp"
 #include "chat/hash.hpp"
 #include "chat/open_table.hpp"
-#include "chat/user.hpp"
 
 namespace chat {
 
-// Этап 8: данные чата за интерфейсом.
-//
-// IChatStore — то, что хранилище чата держит в таблицах: индекс комнат (имя
-// → комната) и реестр ников (ник → пользователь). Вся логика — участники,
-// рассылка с сильной гарантией, история, индекс по времени — остаётся в
-// BasicChatStore и работает с данными только через этот интерфейс. Поэтому
-// одни и те же тесты проходят на каждой реализации, и выбор реализации —
-// параметр запуска (--engine, CHAT_ENGINE).
-//
-// Room — параметр шаблона: комната хранит историю элементов типа M, а
-// тесты подставляют вместо сообщения инструментированные типы.
-//
-// Интерфейс виртуальный, а не шаблонный параметр хранилища: движок
-// выбирается при запуске, а не при компиляции. Цена — косвенный вызов на
-// каждый поиск; она измерена в docs/benchmarks.md.
-template <class Room>
-class IChatStore {
-public:
-    using UserPtr = std::shared_ptr<User>;
-
-    virtual ~IChatStore() = default;
-
-    [[nodiscard]] virtual std::string_view name() const noexcept = 0;
-
-    // --- Комнаты -----------------------------------------------------------
-    [[nodiscard]] virtual Room* find_room(std::string_view room) noexcept = 0;
-    [[nodiscard]] virtual const Room* find_room(std::string_view room) const noexcept = 0;
-    // Новая комната; предусловие — такой ещё нет. Сильная гарантия.
-    virtual Room& add_room(std::string name, Room room) = 0;
-    [[nodiscard]] virtual std::size_t room_count() const noexcept = 0;
-    // Обход в порядке, который выбирает таблица. Упорядоченный по имени
-    // обход — дело упорядоченного индекса в хранилище.
-    virtual void for_each_room(const std::function<void(const std::string&, Room&)>& fn) = 0;
-
-    // --- Реестр ников ------------------------------------------------------
-    [[nodiscard]] virtual const UserPtr* find_user(std::string_view nick) const noexcept = 0;
-    // Новый ник; предусловие — такого ещё нет. Сильная гарантия.
-    virtual void add_user(std::string nick, UserPtr user) = 0;
-    virtual bool remove_user(std::string_view nick) noexcept = 0;
-    // Перенос записи под новый ник; предусловия — from есть, to нет.
-    // Сильная гарантия: при броске реестр прежний.
-    virtual void move_user(std::string_view from, std::string to) = 0;
-    [[nodiscard]] virtual std::size_t user_count() const noexcept = 0;
-
-protected:
-    IChatStore() = default;
-    IChatStore(const IChatStore&) = default;
-    IChatStore& operator=(const IChatStore&) = default;
-};
+// Этап 9: реализации данных чата. Этот заголовок включают точка сборки
+// (src/engines.cpp), тесты движков и таблиц и замеры. Хранилище его не
+// включает.
 
 // Первая реализация — код этапа 7, переехавший за интерфейс: обе таблицы на
 // std::unordered_map со стандартным хешем. На этапе 7 комнаты лежали в
@@ -183,41 +134,6 @@ private:
     Table<std::string, UserPtr, Hash, std::equal_to<>> users_;
 };
 
-enum class EngineKind { Std, Hash, BadHash, Open };
-
-inline constexpr std::array<EngineKind, 4> all_engine_kinds = {EngineKind::Std, EngineKind::Hash,
-                                                               EngineKind::BadHash, EngineKind::Open};
-
-[[nodiscard]] constexpr std::string_view name_of(EngineKind kind) noexcept {
-    switch (kind) {
-        case EngineKind::Std:
-            return "std";
-        case EngineKind::Hash:
-            return "hash";
-        case EngineKind::BadHash:
-            return "bad-hash";
-        case EngineKind::Open:
-            return "open";
-    }
-    return "std";
-}
-
-// Поиск по проекции: find сравнивает с name не сам элемент, а name_of от
-// него.
-[[nodiscard]] inline std::optional<EngineKind> parse_engine_kind(std::string_view name) noexcept {
-    const auto found = std::ranges::find(all_engine_kinds, name, name_of);
-    return found == all_engine_kinds.end() ? std::nullopt : std::optional<EngineKind>(*found);
-}
-
-// Движок по умолчанию — из переменной окружения CHAT_ENGINE, иначе std. Так
-// весь набор тестов прогоняется на каждом движке без единой правки: ctest
-// запускает его четыре раза с разным CHAT_ENGINE (CMakeLists.txt).
-// Неизвестное имя — std: консольный клиент проверяет --engine сам и
-// отвергает опечатку с сообщением.
-[[nodiscard]] inline EngineKind default_engine_kind() noexcept {
-    const char* const value = std::getenv("CHAT_ENGINE");   // NOLINT: окружение читается до потоков
-    return value == nullptr ? EngineKind::Std : parse_engine_kind(value).value_or(EngineKind::Std);
-}
 
 // Случайная затравка хеша на процесс: ники выбирают клиенты, и подобрать
 // ники с одинаковым хешем, не зная затравки, труднее (docs/hashing.md).

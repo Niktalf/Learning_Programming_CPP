@@ -90,7 +90,7 @@ TEST(Fuzz, TruncatedCommands) {
 }
 
 TEST(Fuzz, VeryLongKeysAndValues) {
-    kvs::Server server(kvs::Server::Options{1 << 20, std::nullopt});   // предел в мегабайт
+    kvs::Server server(kvs::Store(1 << 20));   // предел в мегабайт
     for (int i = 0; i < iterations; ++i) {
         const std::string key(static_cast<std::size_t>(pick(1, 20000)), 'k');
         const std::string value(static_cast<std::size_t>(pick(1, 20000)), 'v');

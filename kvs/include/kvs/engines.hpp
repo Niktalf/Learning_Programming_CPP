@@ -1,12 +1,9 @@
 #pragma once
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <functional>
-#include <iterator>
 #include <memory>
 #include <optional>
 #include <random>
@@ -19,70 +16,13 @@
 #include "kvs/chained_table.hpp"
 #include "kvs/hash.hpp"
 #include "kvs/open_table.hpp"
+#include "kvs/storage_engine.hpp"
 
 namespace kvs {
 
-// Этап 8: хранилище за интерфейсом движка.
-//
-// Движок — таблица «ключ → запись»: put, get (find), erase, contains, size и
-// обход. Всё остальное — учёт объёма, версии, предел памяти, списки,
-// диапазонный индекс — остаётся в BasicStore и одинаково для всех движков.
-// Поэтому одни и те же тесты проходят на каждом: тесты знают только
-// BasicStore, а движок выбирается при его создании.
-//
-// Обход — по позициям: корзина и номер в ней. Позиция — не итератор
-// конкретного контейнера, а два числа, которые понимает любая хеш-таблица,
-// и на них стоят и итератор хранилища этапа 7, и SCAN с курсором: курсор
-// SCAN — номер корзины, как в Redis.
-//
-// Виртуальный интерфейс, а не шаблонный параметр: движок выбирается при
-// запуске (--engine), а не при компиляции. Цена — косвенный вызов на каждую
-// операцию; в docs/benchmarks.md видно, что она мала по сравнению с самой
-// таблицей.
-template <class Entry>
-class IStorageEngine {
-public:
-    struct Slot {
-        std::size_t bucket = 0;
-        std::size_t index = 0;
-        friend bool operator==(const Slot&, const Slot&) = default;
-    };
-
-    virtual ~IStorageEngine() = default;
-
-    // Имя движка — для --engine и для отчётов.
-    [[nodiscard]] virtual std::string_view name() const noexcept = 0;
-
-    // Глубокая копия: на ней стоит copy-and-swap у MSET.
-    [[nodiscard]] virtual std::unique_ptr<IStorageEngine> clone() const = 0;
-
-    // Указатель — наблюдатель, не владелец; пустой — ключа нет. Действителен
-    // до следующей вставки: у открытой адресации вставка может перенести
-    // все элементы.
-    [[nodiscard]] virtual Entry* find(std::string_view key) noexcept = 0;
-    [[nodiscard]] virtual const Entry* find(std::string_view key) const noexcept = 0;
-
-    // Вставка или замена с сильной гарантией. true — ключ новый.
-    virtual bool put(std::string key, Entry entry) = 0;
-
-    virtual bool erase(std::string_view key) noexcept = 0;
-
-    [[nodiscard]] virtual std::size_t size() const noexcept = 0;
-
-    [[nodiscard]] bool contains(std::string_view key) const noexcept { return find(key) != nullptr; }
-
-    // --- Обход по позициям -----------------------------------------------
-    [[nodiscard]] virtual std::size_t bucket_count() const noexcept = 0;
-    [[nodiscard]] virtual std::optional<Slot> first_from(std::size_t bucket) const noexcept = 0;
-    [[nodiscard]] virtual std::optional<Slot> next(Slot slot) const noexcept = 0;
-    [[nodiscard]] virtual const std::string& key_at(Slot slot) const noexcept = 0;
-    [[nodiscard]] virtual const Entry& entry_at(Slot slot) const noexcept = 0;
-
-protected:
-    IStorageEngine() = default;
-    IStorageEngine(const IStorageEngine&) = default;
-    IStorageEngine& operator=(const IStorageEngine&) = default;
-};
+// Этап 9: реализации движков. Этот заголовок включают точка сборки
+// (src/engines.cpp, где инстанцирована фабрика), тесты движков и таблиц и
+// замеры. Хранилище его не включает.
 
 // Первая реализация — то, что было до этапа 8: std::unordered_map со
 // стандартным хешем. Обход — через интерфейс корзин unordered_map
@@ -214,50 +154,6 @@ private:
     Table table_;
 };
 
-// Какой движок.
-enum class EngineKind {
-    Std,       // std::unordered_map, стандартный хеш
-    Hash,      // собственная таблица, цепочки, FNV-1a со случайной затравкой
-    BadHash,   // та же таблица с суммой кодов символов — для контраста
-    Open,      // звёздочка: открытая адресация, линейное пробирование, FNV-1a
-};
-
-[[nodiscard]] constexpr std::string_view name_of(EngineKind kind) noexcept {
-    switch (kind) {
-        case EngineKind::Std:
-            return "std";
-        case EngineKind::Hash:
-            return "hash";
-        case EngineKind::BadHash:
-            return "bad-hash";
-        case EngineKind::Open:
-            return "open";
-    }
-    return "std";
-}
-
-inline constexpr std::array<EngineKind, 4> all_engine_kinds = {EngineKind::Std, EngineKind::Hash,
-                                                               EngineKind::BadHash, EngineKind::Open};
-
-[[nodiscard]] inline std::optional<EngineKind> parse_engine_kind(std::string_view name) noexcept {
-    // Поиск по проекции: find сравнивает с name не сам элемент, а name_of
-    // от него.
-    const auto found = std::ranges::find(all_engine_kinds, name, name_of);
-    return found == all_engine_kinds.end() ? std::nullopt : std::optional<EngineKind>(*found);
-}
-
-// Движок по умолчанию — из переменной окружения KVS_ENGINE, иначе std. Так
-// весь набор тестов прогоняется на каждом движке без единой правки: ctest
-// запускает его четыре раза с разным KVS_ENGINE (CMakeLists.txt). Неизвестное
-// имя — std: тесты не должны падать из-за опечатки в окружении, а консольный
-// клиент проверяет --engine сам и отказывает с ошибкой.
-[[nodiscard]] inline EngineKind default_engine_kind() noexcept {
-    static const EngineKind kind = [] {
-        const char* const name = std::getenv("KVS_ENGINE");
-        return name == nullptr ? EngineKind::Std : parse_engine_kind(name).value_or(EngineKind::Std);
-    }();
-    return kind;
-}
 
 // Затравка FNV-1a — случайная на каждый движок: клиент её не знает и не
 // может подобрать ключи с одинаковым хешем заранее.
@@ -283,5 +179,6 @@ template <class Entry>
     }
     return std::make_unique<StdEngine<Entry>>();
 }
+
 
 }  // namespace kvs

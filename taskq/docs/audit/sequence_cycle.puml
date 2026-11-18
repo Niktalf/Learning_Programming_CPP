@@ -1,0 +1,51 @@
+@startuml sequence_cycle
+' Этап 9: полный цикл задачи после рефакторинга — SUBMIT, POLL, ACK; и
+' ветка истечения аренды. Время — от IClock: now() для сроков, wall() для
+' времени постановки.
+autonumber
+actor Клиент
+participant "Service" as Service
+participant "Lifecycle" as States
+participant "BasicTaskStore" as Store
+participant "ITaskIndex" as Index
+participant "IClock" as Clock
+participant "ILogSink" as Sink
+actor Воркер
+
+== SUBMIT build num:5 ==
+Клиент -> Service : execute("SUBMIT build num:5")
+Service -> Clock : wall()  — время постановки
+Service -> Store : submit_batch([Task])
+Store -> Index : insert(id, Location)
+Service -> States : admit({id: Pending})
+Service -> Sink : append("1\\t-\\tpending")
+Service --> Клиент : OK id=1
+
+== POLL build w1 ==
+Воркер -> Service : execute("POLL build w1")
+Service -> Clock : now()
+Service -> Store : promote_due(now)
+Service -> Store : front_id("build", now)
+Service -> States : require(1, Leased)
+Service -> Service : подготовка аренды:\nузел leases_, срок now + lease_timeout
+Service -> Store : take("build", now)
+Store -> Index : erase(1)
+Service -> States : commit(1, Leased)
+Service -> Sink : append("1\\tpending\\tleased")
+Service --> Воркер : id=1 5
+
+alt ACK 1
+  Воркер -> Service : execute("ACK 1")
+  Service -> States : require(1, Done)
+  Service -> Service : end_lease(1)
+  Service -> States : commit(1, Done)
+  Service -> Sink : append("1\\tleased\\tdone")
+else аренда истекла
+  Клиент -> Service : execute("REAP")
+  Service -> Clock : now()
+  Service -> Service : истёкшие = начало\nиндекса аренд до now
+  Service -> Store : submit("build", task)
+  Service -> States : commit(1, Pending)
+  Service -> Sink : append("1\\tleased\\tpending")
+end
+@enduml

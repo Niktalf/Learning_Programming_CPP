@@ -1,0 +1,75 @@
+@startuml classes_before
+' Этап 9: классы KVS как они есть на теге v08 — до рефакторинга.
+' Показаны связи, а не поля. Красным — места нарушений из docs/audit.md.
+skinparam classAttributeIconSize 0
+hide empty members
+
+package "консольный клиент" {
+  class main <<program>>
+}
+
+package "ядро" {
+  class Server {
+    +Server(Options)
+    +handle(line) : Response
+  }
+  class "Server::Options" as Options
+  class RequestCache
+  class "BasicStore<V>" as Store #FFDDDD {
+    set / get / del / modify
+    KEYS / SCAN / KEYSRANGE
+    учёт объёма used_, memory_limit_
+    логические часы clock_
+  }
+  class "CommandRegistry<Store>" as Registry
+  class "commands()" as Commands <<function, static>>
+  class "reason_of()" as ReasonOf <<function>> #FFDDDD
+  class Value
+  interface IValue
+  class StringValue
+  class IntValue
+  class ListValue
+}
+
+package "engine.hpp — интерфейс и реализации в одном заголовке" #FFEEEE {
+  interface "IStorageEngine<Entry>" as IEngine
+  class "StdEngine<Entry>" as StdEngine
+  class "TableEngine<Entry, Table>" as TableEngine
+  class "ChainedTable" as Chained
+  class "OpenTable" as Open
+  enum EngineKind
+  class "default_engine_kind()" as EnvKind <<getenv>> #FFDDDD
+  class "make_engine<Entry>()" as MakeEngine
+}
+
+package "файлы" {
+  class AppendOnlyLog
+  class "read_lines()" as ReadLines <<function>>
+}
+
+main --> Server : создаёт из Options
+main -[#red]-> Store : MEMORY: server.store().used_bytes()
+Server *-- Store
+Server *-- RequestCache
+Server *-[#red]- "0..1" AppendOnlyLog : открывает по пути
+Server .[#red].> ReadLines : восстановление
+Server ..> ReasonOf : формат ошибки
+Server ..> Options
+Options .[#red].> EnvKind : значение по умолчанию
+Server ..> Commands
+Commands --> Registry
+Store *-- IEngine
+Store .[#red].> MakeEngine : создаёт движок сам
+Store .[#red].> EnvKind : Store()
+MakeEngine ..> StdEngine
+MakeEngine ..> TableEngine
+IEngine <|.. StdEngine
+IEngine <|.. TableEngine
+TableEngine *-- Chained
+TableEngine *-- Open
+Store *-- Value
+Value *-- IValue
+IValue <|.. StringValue
+IValue <|.. IntValue
+IValue <|.. ListValue
+@enduml

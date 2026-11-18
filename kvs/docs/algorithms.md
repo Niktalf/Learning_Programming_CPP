@@ -11,8 +11,8 @@
 
 | где | было | стало |
 |---|---|---|
-| `engine.hpp`, `StdEngine::first_from` | цикл по номерам корзин до непустой | `ranges::find_if` по `views::iota` |
-| `engine.hpp`, `parse_engine_kind` | цикл по вариантам со сравнением имени | `ranges::find` с проекцией `name_of` |
+| `engines.hpp` (на этапе 8 — `engine.hpp`), `StdEngine::first_from` | цикл по номерам корзин до непустой | `ranges::find_if` по `views::iota` |
+| `engine_kind.hpp` (на этапе 8 — `engine.hpp`), `parse_engine_kind` | цикл по вариантам со сравнением имени | `ranges::find` с проекцией `name_of` |
 | `commands.cpp`, EXISTS | (новое: несколько ключей) | `ranges::count_if` по аргументам |
 | `request_cache.cpp`, `purge` | цикл с `erase(it++)` | `std::erase_if` |
 | `registry.hpp`, `names()` | цикл с `push_back` | `ranges::to` от `views::keys` |

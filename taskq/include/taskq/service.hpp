@@ -2,8 +2,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <filesystem>
-#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -12,10 +10,12 @@
 #include <string_view>
 #include <vector>
 
+#include "taskq/clock.hpp"
 #include "taskq/convert.hpp"
-#include "taskq/engine.hpp"
-#include "taskq/log.hpp"
+#include "taskq/journal.hpp"
+#include "taskq/lifecycle.hpp"
 #include "taskq/registry.hpp"
+#include "taskq/retry_policy.hpp"
 #include "taskq/state.hpp"
 #include "taskq/task_store.hpp"
 #include "taskq/worker.hpp"
@@ -27,30 +27,26 @@ inline constexpr std::size_t default_list_limit = 20;
 // Сервис очереди: хранилище ожидающих задач, выданные воркерам задачи и
 // состояние каждой задачи по автомату из state.hpp.
 //
-// Состояние хранится в одном месте — states_, — и меняется только через
-// transition_to: так все переходы проходят через allowed(). Где лежит сама
+// Состояние хранится в одном месте — Lifecycle (этап 9), — и меняется только
+// через него: так все переходы проходят через allowed(). Где лежит сама
 // задача, следует из состояния: Pending — в очереди, Leased — в leases_,
 // Done и Failed — нигде, тело больше не нужно.
 class Service {
 public:
-    Service() = default;
-
-    // Этап 8: движок индекса задач по номеру — параметр запуска
-    // (taskq_cli --engine=hash).
-    explicit Service(EngineKind engine, const std::optional<std::filesystem::path>& log = std::nullopt)
-        : store_(engine) {
-        if (log) {
-            log_.emplace(*log);
-        }
-    }
-
-    // С журналом переходов: каждый переход состояния дописывается в файл
-    // строкой «номер<TAB>из<TAB>в». По журналу видно, что случилось с
-    // конкретной задачей; на этапе 17 рядом с ним появится снапшот.
+    // Этап 9: все зависимости — снаружи. Хранилище приходит готовым (с
+    // индексом по номеру), часы и журнал — портами IClock и ILogSink,
+    // политика повторов — значением. Сервис не знает ни файлов, ни путей,
+    // ни движков; собирает его точка сборки make_service (compose.hpp). До
+    // этапа 9 конструкторы принимали путь и имя движка и сами открывали
+    // файл (docs/audit.md, запись 4).
     //
-    // Конструктор бросает, если файл не открылся. Деструктор Service тогда
-    // не вызовется, но уже построенные поля разрушатся корректно.
-    explicit Service(const std::filesystem::path& log) : log_(std::in_place, log) {}
+    // Журнал переходов: каждый переход состояния — строка «номер<TAB>из<TAB>в».
+    // По журналу видно, что случилось с конкретной задачей; на этапе 17
+    // рядом с ним появится снапшот. Часы не во владении: они живут у точки
+    // сборки дольше сервиса.
+    explicit Service(TaskStore store = TaskStore(), const IClock& clock = system_clocks(),
+                     std::unique_ptr<ILogSink> log = nullptr, RetryPolicy retry = RetryPolicy())
+        : store_(std::move(store)), log_(std::move(log)), clock_(&clock), retry_(retry) {}
 
     // Разбор и исполнение одной строки. Ошибки бросаются: ошибка разбора —
     // ParseError с подсказкой «usage: …», ошибка исполнения — обёрнутая в
@@ -64,12 +60,6 @@ public:
     [[nodiscard]] static const CommandRegistry<Service>& commands();
 
     [[nodiscard]] const TaskStore& store() const noexcept { return store_; }
-
-    // Часы сервиса. DELAY откладывает задачу до «сейчас + задержка», и тесту
-    // нужно управлять этим «сейчас», не засыпая. На этапе 11 те же часы
-    // понадобятся срокам аренды.
-    using Clock = std::function<Timestamp()>;
-    void set_clock(Clock clock) { clock_ = std::move(clock); }
 
     // Этап 8: срок аренды. Задача, выданная POLL, должна быть подтверждена
     // (ACK, FAIL) или возвращена (RELEASE) за это время; иначе REAP вернёт её
@@ -92,7 +82,7 @@ private:
         std::string queue;
         std::optional<std::weak_ptr<Worker>> holder;
         std::string holder_name;   // имя остаётся, даже когда воркера уже нет
-        Timestamp expires{};       // этап 8: срок аренды, ключ в lease_deadlines_
+        Instant expires{};         // этап 8: срок аренды, ключ в lease_deadlines_; этап 9 — монотонный
 
         [[nodiscard]] bool abandoned() const noexcept { return holder && holder->expired(); }
     };
@@ -122,6 +112,9 @@ private:
     Response purge(QueueName queue);
     Response peek(QueueName queue) const;
 
+    // Этап 9: когда задача поставлена — по системным часам (IClock::wall()).
+    Response info(TaskId id) const;
+
     // Постановка одной задачи и пакета — один путь: SUBMIT — пакет из одной.
     [[nodiscard]] Response submit_all(const std::vector<Batch::Item>& items);
 
@@ -135,31 +128,24 @@ private:
     // Запись перехода в журнал, если он ведётся.
     void record(TaskId id, std::string_view from, State to);
 
-    // Текущее состояние; задачи, которой не было, — UnknownTaskError.
-    [[nodiscard]] State state_of(TaskId id) const;
-
-    // Проверка перехода по автомату — до любых изменений. Бросает
-    // InvalidTransitionError, если переход запрещён.
-    void require_transition(TaskId id, State to) const;
-
-    // Фиксация перехода, уже проверенного require_transition. Не бросает:
-    // запись существует, присваивание перечисления бросить не может.
-    void transition_to(TaskId id, State to) noexcept;
-
     TaskStore store_;
+    Lifecycle states_;   // этап 9: состояния и проверка переходов — в одной точке
+    // Этап 9: сколько раз задачу проваливали — для политики повторов.
+    // Запись живёт, пока задача не завершена окончательно.
+    std::map<TaskId, std::uint32_t> failures_;
     std::map<TaskId, Lease> leases_;
     // Этап 8: индекс аренд по сроку — красно-чёрное дерево пар «когда
     // истекает, номер». Истёкшие аренды — начало дерева до now, без перебора
     // всех аренд. На этапе 11 его будет опрашивать фоновый сборщик.
-    std::set<std::pair<Timestamp, TaskId>> lease_deadlines_;
+    std::set<std::pair<Instant, TaskId>> lease_deadlines_;
     std::chrono::seconds lease_timeout_ = default_lease_timeout;
-    std::map<TaskId, State> states_;
 
     // Реестр воркеров владеет ими; аренды только наблюдают.
     std::map<std::string, std::shared_ptr<Worker>, std::less<>> workers_;
 
-    std::optional<AppendOnlyLog> log_;   // пусто — журнал не ведётся
-    Clock clock_ = [] { return std::chrono::system_clock::now(); };
+    std::unique_ptr<ILogSink> log_;   // пусто — журнал не ведётся
+    const IClock* clock_;             // этап 9: часы — не во владении
+    RetryPolicy retry_;               // этап 9: что делать после FAIL
 
     // Номера выдаются последовательно. На этапе 12 счётчик станет атомарным,
     // и там придётся отдельно разобраться с порядком памяти.

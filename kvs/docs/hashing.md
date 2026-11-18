@@ -1,7 +1,7 @@
 # Хеш-функции и собственные хеш-таблицы (этап 8)
 
 Код: `include/kvs/hash.hpp`, `include/kvs/chained_table.hpp`,
-`include/kvs/open_table.hpp`, `include/kvs/engine.hpp`. Цифры получены
+`include/kvs/open_table.hpp`, `include/kvs/storage_engine.hpp`, `include/kvs/engines.hpp`. Цифры получены
 программами `kvs_hash_histogram` и `kvs_bench_open` (Release, GCC 15.2).
 
 ## Движки

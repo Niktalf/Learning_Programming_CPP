@@ -1,0 +1,82 @@
+@startuml classes_after
+' Этап 9: классы CHAT после рефакторинга. Интерфейсы лежат у потребителя;
+' конкретные классы создаёт только точка сборки make_server.
+skinparam classAttributeIconSize 0
+hide empty members
+
+package "консольный клиент" {
+  class main <<program>>
+}
+
+package "точка сборки (compose.hpp / compose.cpp)" #EEFFEE {
+  class Config
+  class "make_server()" as MakeServer <<function>>
+}
+
+package "ядро" {
+  class Server {
+    +Server(ChatStore, unique_ptr<ILogSink>)
+  }
+  class Context {
+    store, session
+    ILogSink* journal
+  }
+  interface ILogSink <<port, journal.hpp>>
+  class "BasicChatStore<M>" as Store {
+    +BasicChatStore(unique_ptr<IChatStore>, capacity, const IClock&)
+  }
+  class MessageIdSource
+  interface "IChatStore<Room>" as IData <<port, chat_data.hpp>>
+  interface IClock <<port, clock.hpp>> {
+    now() : steady
+    wall() : system
+  }
+  class SystemClocks
+  class Reply <<Pure Fabrication>>
+  class "CommandRegistry<Context>" as Registry
+  interface IMessage
+  class MessageHeader
+  class TextMessage
+  class SystemMessage
+  class ReactionMessage
+  class User
+}
+
+package "адаптеры" {
+  package "engines.hpp" {
+    class StdChatStore
+    class TableChatStore
+    class "make_chat_store<Room>()" as MakeData
+  }
+  package "log.hpp" {
+    class AppendOnlyLog
+  }
+}
+
+main --> MakeServer : Config из аргументов
+MakeServer ..> MakeData
+MakeServer ..> AppendOnlyLog
+MakeServer --> Server : собирает
+Server *-- Store
+Server o-- "0..1" ILogSink
+Server ..> Reply
+Registry ..> Context
+Registry ..> Reply
+Context --> ILogSink
+Store *-- IData
+Store *-- MessageIdSource
+Store o-- IClock
+MessageIdSource o-- IClock
+IClock <|.. SystemClocks
+ILogSink <|.. AppendOnlyLog
+IData <|.. StdChatStore
+IData <|.. TableChatStore
+Store o-- User
+Store *-- IMessage : история
+IMessage <|.. TextMessage
+IMessage <|.. SystemMessage
+IMessage <|.. ReactionMessage
+TextMessage *-- MessageHeader
+SystemMessage *-- MessageHeader
+ReactionMessage *-- MessageHeader
+@enduml

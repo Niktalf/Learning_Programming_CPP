@@ -1,7 +1,7 @@
 # Хеш-функции и собственные хеш-таблицы (этап 8)
 
 Код: `include/chat/hash.hpp`, `include/chat/chained_table.hpp`,
-`include/chat/open_table.hpp`, `include/chat/engine.hpp`. Цифры получены
+`include/chat/open_table.hpp`, `include/chat/chat_data.hpp`, `include/chat/engines.hpp`. Цифры получены
 программами `chat_nick_histogram` и `chat_bench_open` (Release, GCC 15.2).
 
 ## Движки

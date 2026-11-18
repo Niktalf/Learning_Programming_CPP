@@ -40,7 +40,10 @@ add_library(chat_core
     src/log.cpp
     src/validate.cpp
     src/message_id.cpp
-    src/owning_buffer.cpp)
+    src/owning_buffer.cpp
+    src/engines.cpp
+    src/reply.cpp
+    src/compose.cpp)
 target_include_directories(chat_core PUBLIC include)
 target_link_libraries(chat_core PRIVATE chat_warnings)
 
@@ -63,7 +66,6 @@ add_executable(chat_tests
     tests/test_result.cpp
     tests/test_fuzz.cpp
     tests/test_members.cpp
-    tests/test_log.cpp
     tests/test_cycle.cpp
     tests/test_concepts.cpp
     tests/test_history.cpp
@@ -78,9 +80,21 @@ add_executable(chat_tests
     tests/test_hash_tables.cpp
     tests/test_engines.cpp
     tests/test_time_index.cpp
-    tests/test_rooms_page.cpp)
+    tests/test_rooms_page.cpp
+    tests/test_clock.cpp)
 target_include_directories(chat_tests PRIVATE tests tools)
 target_link_libraries(chat_tests PRIVATE chat_core chat_warnings GTest::gtest_main)
+
+# Этап 9: тесты, которым нужна файловая система, — отдельно. Модульные
+# тесты (chat_tests) не пишут файлов и не смотрят на настоящие часы: журнал
+# и часы — порты с подставными реализациями. Здесь — файловый журнал и
+# точка сборки с настоящими файлами; метка integration отделяет их в ctest
+# (ctest -LE integration — только модульные).
+add_executable(chat_integration_tests
+    tests/test_log.cpp
+    tests/test_compose.cpp)
+target_include_directories(chat_integration_tests PRIVATE tests tools)
+target_link_libraries(chat_integration_tests PRIVATE chat_core chat_warnings GTest::gtest_main)
 
 # Звёздочка этапа 1: порядок конструкторов при добавлении в std::vector.
 add_executable(chat_push_order tools/push_order.cpp)
@@ -135,10 +149,11 @@ add_test(NAME chat_invalidation_detected
 include(GoogleTest)
 gtest_discover_tests(chat_tests)
 gtest_discover_tests(chat_alloc_tests)
+gtest_discover_tests(chat_integration_tests PROPERTIES LABELS integration)
 
 # Этап 8: тот же набор тестов на каждом движке хранилища, без единой правки
 # в тестах. Движок по умолчанию берётся из переменной окружения CHAT_ENGINE
-# (engine.hpp), и ctest запускает набор ещё трижды — на собственной
+# (engine_kind.hpp), и ctest запускает набор ещё трижды — на собственной
 # хеш-таблице, на ней же с заведомо плохой хеш-функцией и на открытой
 # адресации. Имена тестов получают приставку движка: hash/Commands.JoinAndWho.
 foreach(engine hash bad-hash open)

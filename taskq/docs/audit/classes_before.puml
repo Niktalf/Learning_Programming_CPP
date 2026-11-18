@@ -1,0 +1,60 @@
+@startuml classes_before
+' Этап 9: классы TASKQ на теге v08 — до рефакторинга. Показаны связи, а не
+' поля. Красным — связи, нарушающие принципы (docs/audit.md).
+skinparam classAttributeIconSize 0
+hide empty members
+
+package "консольный клиент" {
+  class main <<program>>
+}
+
+package "ядро" {
+  class Service #FFDDDD {
+    +Service(EngineKind, optional<path>)
+    +Service(path)
+    команды
+    states_ + state_of / require_transition / transition_to
+    leases_ + lease_deadlines_
+    workers_
+    Clock = std::function<system_clock>
+  }
+  class "BasicTaskStore<T>" as Store {
+    очереди, индекс по сроку
+    peek/take(now = system_clock::now())
+  }
+  class "CommandRegistry<Service>" as Registry
+  class Task
+  class Worker
+}
+
+package "engine.hpp — интерфейс и реализации в одном заголовке" #FFEEEE {
+  interface "ITaskIndex<Location>" as IIndex
+  class StdTaskIndex
+  class TableTaskIndex
+  class ChainedTable
+  class OpenTable
+  class "default_engine_kind()" as EnvKind <<getenv>>
+  class "make_task_index<Location>()" as MakeIndex
+}
+
+package "файлы" {
+  class AppendOnlyLog
+}
+
+main --> Service : создаёт с путём и движком
+Service *-- Store
+Service *-[#red]- "0..1" AppendOnlyLog : открывает по пути
+Service ..> Registry
+Service o-- Worker
+Service *-- Task : в арендах
+Store *-- Task
+Store *-- IIndex
+Store .[#red].> MakeIndex : создаёт индекс сам
+Store .[#red].> EnvKind : TaskStore()
+MakeIndex ..> StdTaskIndex
+MakeIndex ..> TableTaskIndex
+IIndex <|.. StdTaskIndex
+IIndex <|.. TableTaskIndex
+TableTaskIndex *-- ChainedTable
+TableTaskIndex *-- OpenTable
+@enduml

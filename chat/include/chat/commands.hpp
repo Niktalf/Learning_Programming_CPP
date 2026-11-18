@@ -4,7 +4,7 @@
 #include <string_view>
 
 #include "chat/chat_store.hpp"
-#include "chat/log.hpp"
+#include "chat/journal.hpp"
 #include "chat/registry.hpp"
 
 namespace chat {
@@ -22,7 +22,7 @@ struct Session {
 struct Context {
     ChatStore& store;
     Session& session;
-    AppendOnlyLog* journal = nullptr;
+    ILogSink* journal = nullptr;   // этап 9: порт, а не файл
 };
 
 // Этап 6: все команды чата — в одном реестре. Добавить команду — одна

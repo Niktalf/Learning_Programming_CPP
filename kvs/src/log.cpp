@@ -3,6 +3,7 @@
 #include <ios>
 
 #include "kvs/errors.hpp"
+#include "kvs/file.hpp"
 
 namespace kvs {
 
@@ -19,6 +20,13 @@ void AppendOnlyLog::append(std::string_view record) {
     if (!out_) {
         throw KvError("log write failed");
     }
+}
+
+std::vector<std::string> FileHistory::records() const {
+    if (!std::filesystem::exists(path_)) {
+        return {};
+    }
+    return read_lines(path_);
 }
 
 }  // namespace kvs

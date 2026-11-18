@@ -8,7 +8,7 @@
 #include <string>
 #include <string_view>
 
-#include "kvs/engine.hpp"
+#include "kvs/engines.hpp"
 #include "kvs/store.hpp"
 
 using kvs::EngineKind;

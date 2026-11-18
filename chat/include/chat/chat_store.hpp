@@ -19,11 +19,13 @@
 #include <utility>
 #include <vector>
 
+#include "chat/chat_data.hpp"
+#include "chat/clock.hpp"
 #include "chat/concepts.hpp"
-#include "chat/engine.hpp"
 #include "chat/errors.hpp"
 #include "chat/message.hpp"
 #include "chat/message_id.hpp"
+#include "chat/message_ids.hpp"
 #include "chat/ring_buffer.hpp"
 #include "chat/user.hpp"
 
@@ -97,13 +99,26 @@ public:
     // Сколько сообщений помнит комната по умолчанию.
     static constexpr std::size_t default_history_capacity = 1000;
 
-    // Этап 8: данные — за интерфейсом движка (engine.hpp). Движок по
+    using EnginePtr = std::unique_ptr<Engine>;
+
+    // Этап 9: главный конструктор — все зависимости приходят снаружи: данные
+    // (IChatStore), ёмкость истории, часы. Хранилище не создаёт свои данные
+    // само; собирает объекты точка сборки (src/compose.cpp). Часы не во
+    // владении: они живут у точки сборки дольше хранилища, а по умолчанию это
+    // единственные на программу SystemClocks.
+    explicit BasicChatStore(EnginePtr engine, std::size_t history_capacity = default_history_capacity,
+                            const IClock& clock = system_clocks())
+        : engine_(std::move(engine)), history_capacity_(history_capacity), clock_(&clock), ids_(clock) {}
+
+    // Удобные конструкторы — для тестов и примеров: данные по имени движка
+    // через фабрику make_chat_store, объявленную в chat_data.hpp. Движок по
     // умолчанию — из окружения (default_engine_kind): так весь набор тестов
-    // прогоняется на каждом движке без правок.
+    // прогоняется на каждом движке без правок. Это осознанно оставленная
+    // скрытая зависимость (docs/audit.md, «Что оставлено»).
     BasicChatStore() : BasicChatStore(default_engine_kind()) {}
-    explicit BasicChatStore(EngineKind engine) : engine_(make_chat_store<Room>(engine)) {}
+    explicit BasicChatStore(EngineKind engine) : BasicChatStore(make_chat_store<Room>(engine)) {}
     explicit BasicChatStore(std::size_t history_capacity, EngineKind engine = default_engine_kind())
-        : engine_(make_chat_store<Room>(engine)), history_capacity_(history_capacity) {}
+        : BasicChatStore(make_chat_store<Room>(engine), history_capacity) {}
 
     [[nodiscard]] std::size_t history_capacity() const noexcept { return history_capacity_; }
     [[nodiscard]] std::string_view engine_name() const noexcept { return engine_->name(); }
@@ -127,6 +142,7 @@ public:
             throw NicknameTakenError(std::move(nick));
         }
         auto user = std::make_shared<User>(nick);
+        user->touch(clock_->now());   // вход — тоже активность
         engine_->add_user(std::move(nick), user);
         return user;
     }
@@ -149,7 +165,7 @@ public:
     //
     // Сильная гарантия: копия ника для объекта и перенос записи реестра —
     // всё, что может бросить, — до изменения объекта. Перенос записи даёт
-    // сильную гарантию сам (engine.hpp), а переименование объекта —
+    // сильную гарантию сам (chat_data.hpp), а переименование объекта —
     // перемещение строки — не бросает.
     void rename(std::string_view from, std::string to) {
         if (from == to) {
@@ -534,14 +550,31 @@ public:
     }
 
     // Идентификатор для нового сообщения: следующий номер в общей
-    // последовательности чата и текущее время.
-    [[nodiscard]] MessageId next_message_id(std::string author) {
-        return MessageId{++seq_, clock_(), std::move(author)};
+    // последовательности чата и время по системным часам — его видит
+    // пользователь, и по нему работают /since и /until. Этап 9: выдаёт их
+    // MessageIdSource (message_ids.hpp); хранилище только передаёт запрос.
+    [[nodiscard]] MessageId next_message_id(std::string author) { return ids_.next(std::move(author)); }
+
+    // --- Этап 9: активность пользователя ------------------------------------
+    //
+    // Отметить, что пользователь только что что-то сделал. Время — монотонное
+    // (IClock::now()): простой — интервал. Неизвестный ник — ничего: отмечать
+    // некого. Зовёт сервер на каждую команду; на этапе 11 по этой отметке
+    // будут отключаться неактивные сессии.
+    void touch(std::string_view nick) noexcept {
+        if (const std::shared_ptr<User>* const user = engine_->find_user(nick)) {
+            (*user)->touch(clock_->now());
+        }
     }
 
-    // Этап 8: часы подменяемы — тестам индекса по времени нужны известные
-    // отметки, а не текущее время. Миллисекунды от эпохи.
-    void set_clock(std::function<std::uint64_t()> clock) { clock_ = std::move(clock); }
+    // Сколько пользователь бездействует; неизвестный ник — пусто.
+    [[nodiscard]] std::optional<std::chrono::steady_clock::duration> idle_time(std::string_view nick) const {
+        const std::shared_ptr<User>* const user = engine_->find_user(nick);
+        if (user == nullptr) {
+            return std::nullopt;
+        }
+        return clock_->now() - (*user)->last_active();
+    }
 
     [[nodiscard]] std::size_t room_count() const noexcept { return engine_->room_count(); }
     [[nodiscard]] bool empty() const noexcept { return engine_->room_count() == 0; }
@@ -666,12 +699,8 @@ private:
     // поэтому индекс меняется только в add_room.
     std::set<std::string, std::less<>> room_order_;
     std::size_t history_capacity_ = default_history_capacity;
-    std::uint64_t seq_ = 0;   // последний выданный номер сообщения
-    std::function<std::uint64_t()> clock_ = [] {
-        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch());
-        return static_cast<std::uint64_t>(now.count());
-    };
+    const IClock* clock_;     // этап 9: часы — не во владении
+    MessageIdSource ids_;     // этап 9: номера и отметки сообщений
 };
 
 using ChatStore = BasicChatStore<MessagePtr>;

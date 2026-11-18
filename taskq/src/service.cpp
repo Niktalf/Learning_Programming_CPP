@@ -102,25 +102,6 @@ constexpr std::string_view binary_prefix = "bin:";
 
 }  // namespace
 
-State Service::state_of(TaskId id) const {
-    const auto it = states_.find(id);
-    if (it == states_.end()) {
-        throw UnknownTaskError(id);
-    }
-    return it->second;
-}
-
-void Service::require_transition(TaskId id, State to) const {
-    const State from = state_of(id);
-    if (!allowed(from, to)) {
-        throw InvalidTransitionError(id, from, to);
-    }
-}
-
-void Service::transition_to(TaskId id, State to) noexcept {
-    states_.find(id)->second = to;
-}
-
 // Постановка одной задачи и пакета — один путь: SUBMIT — пакет из одной.
 //
 // Сильная гарантия на уровне сервиса складывается из трёх шагов, и порядок
@@ -128,9 +109,9 @@ void Service::transition_to(TaskId id, State to) noexcept {
 //   1. всё, что может бросить, но не трогает состояние сервиса: разбор тел
 //      и подготовка записей о состоянии новых задач в отдельной таблице;
 //   2. постановка в хранилище — сильная гарантия submit_batch;
-//   3. перенос подготовленных записей в states_ через merge. merge переносит
-//      узлы, не выделяя памяти, и бросить может только сравнение ключей —
-//      а сравнение целых не бросает.
+//   3. перенос подготовленных записей в Lifecycle (admit — merge узлов:
+//      памяти не выделяет, бросить может только сравнение целых, а оно не
+//      бросает).
 // Номера задач занимаются последними: неудачный пакет номеров не тратит.
 Response Service::submit_all(const std::vector<Batch::Item>& items) {
     std::vector<std::pair<std::string_view, Task>> tasks;
@@ -142,7 +123,7 @@ Response Service::submit_all(const std::vector<Batch::Item>& items) {
         // аргументы конструкторам обоих полей, и задача рождается прямо в
         // элементе вектора, без временного Task и его перемещения.
         tasks.emplace_back(std::piecewise_construct, std::forward_as_tuple(item.queue),
-                           std::forward_as_tuple(id, make_payload(item.body), item.priority));
+                           std::forward_as_tuple(id, make_payload(item.body), item.priority, clock_->wall()));
         added.emplace(id, State::Pending);
         ++id;
     }
@@ -151,7 +132,7 @@ Response Service::submit_all(const std::vector<Batch::Item>& items) {
     // submit_batch принимал const& и копировал каждую задачу — то есть клон
     // тела на каждый SUBMIT ради вектора, который тут же уничтожался.
     store_.submit_batch(std::move(tasks));
-    states_.merge(added);
+    states_.admit(added);
     // Этап 8: iota вместо цикла со счётчиком — номера новых задач подряд.
     std::ranges::for_each(std::views::iota(next_id_, id), [this](TaskId submitted) {
         record(submitted, "-", State::Pending);
@@ -183,7 +164,7 @@ Response Service::poll(QueueName queue, std::optional<WorkerName> holder) {
 
     // Одно «сейчас» на всю команду: между front_id и take время не должно
     // сдвинуться так, чтобы выбор поменялся.
-    const Timestamp now = clock_();
+    const Instant now = clock_->now();
     // Этап 8: отложенные задачи, которым пора, — обратно в очереди. До
     // подготовки аренды: возврат может бросить (вставка в дерево), и тогда
     // аренды ещё нет, а каждая задача — в очереди или в индексе по сроку,
@@ -193,7 +174,7 @@ Response Service::poll(QueueName queue, std::optional<WorkerName> holder) {
     if (!id) {
         return Response{true, "(empty)"};   // пустая очередь — не ошибка
     }
-    require_transition(*id, State::Leased);
+    states_.require(*id, State::Leased);
 
     // Подготовка: узел map и копии строк. Здесь может бросить, но очередь
     // ещё не тронута. weak_ptr строится из shared_ptr без выделения памяти.
@@ -202,7 +183,7 @@ Response Service::poll(QueueName queue, std::optional<WorkerName> holder) {
         prepared.holder = std::weak_ptr<Worker>(worker);
         prepared.holder_name = worker->name();
     }
-    prepared.expires = now + lease_timeout_;
+    prepared.expires = now + lease_timeout_;   // этап 9: монотонные часы — срок не прыгает
     const auto slot = leases_.try_emplace(*id, std::move(prepared)).first;
     // Этап 8: узел индекса аренд по сроку — тоже в подготовке. Если его
     // выделение бросит, подготовленное место в leases_ убирается (erase по
@@ -216,7 +197,7 @@ Response Service::poll(QueueName queue, std::optional<WorkerName> holder) {
 
     // Фиксация: ни одна операция ниже не бросает.
     slot->second.task = std::move(*store_.take(queue.name, now));
-    transition_to(*id, State::Leased);
+    states_.commit(*id, State::Leased);
     record(*id, name(State::Pending), State::Leased);
 
     return Response{true, std::format("id={} {}", *id, slot->second.task.to_string())};
@@ -226,11 +207,11 @@ void Service::return_lease(TaskId id) {
     // Возврат аренды: задача встаёт в конец своей очереди. Сначала копия в
     // очередь — если она бросит, аренда цела; затем удаление аренды, которое
     // не бросает. Копия — цена простоты: возврат редок по сравнению с POLL.
-    require_transition(id, State::Pending);
+    states_.require(id, State::Pending);
     const auto lease = leases_.find(id);
     store_.submit(lease->second.queue, lease->second.task);
     end_lease(id);
-    transition_to(id, State::Pending);
+    states_.commit(id, State::Pending);
     record(id, name(State::Leased), State::Pending);
 }
 
@@ -262,7 +243,7 @@ void Service::end_lease(TaskId id) noexcept {
 // очередях, и это корректное состояние — каждая задача либо в очереди,
 // либо в аренде, и ни одна не потеряна.
 Response Service::reap() {
-    const Timestamp now = clock_();
+    const Instant now = clock_->now();
     std::vector<TaskId> returned = std::ranges::to<std::vector<TaskId>>(
         std::ranges::subrange(lease_deadlines_.begin(),
                               lease_deadlines_.upper_bound({now, std::numeric_limits<TaskId>::max()})) |
@@ -306,17 +287,47 @@ Response Service::submit_batch(Batch batch) {
 }
 
 Response Service::ack(TaskId id) {
-    require_transition(id, State::Done);
+    states_.require(id, State::Done);
     end_lease(id);
-    transition_to(id, State::Done);
+    states_.commit(id, State::Done);
+    failures_.erase(id);
     record(id, name(State::Leased), State::Done);
     return Response{true, "OK"};
 }
 
+// Этап 9: FAIL спрашивает политику повторов (RetryPolicy, домашнее
+// задание). Попытки остались — задача возвращается в свою очередь и
+// откладывается на паузу политики: Leased -> Pending, как у RELEASE. Не
+// осталось — Leased -> Failed, как и до этапа 9. Политика по умолчанию —
+// без повторов, и поведение по умолчанию прежнее.
 Response Service::fail(TaskId id) {
-    require_transition(id, State::Failed);
+    states_.require(id, State::Failed);   // FAIL — только для выданной задачи
+    const auto known = failures_.find(id);
+    const std::uint32_t failed = (known == failures_.end() ? 0 : known->second) + 1;
+    if (const auto pause = retry_.retry_after(failed)) {
+        // Место под счётчик — до изменений: try_emplace может бросить, но
+        // ничего ещё не тронуто. Дальше возврат аренды с сильной гарантией;
+        // если он бросит, только что созданный счётчик убирается.
+        const auto [counter, created] = failures_.try_emplace(id, 0);
+        try {
+            return_lease(id);
+        } catch (...) {
+            if (created) {
+                failures_.erase(counter);
+            }
+            throw;
+        }
+        counter->second = failed;
+        // Пауза: задача уже в очереди и ожидает. Если отложить её не выйдет
+        // (узел индекса по сроку не выделился), она останется готовой без
+        // паузы — состояние корректное, задача не потеряна.
+        store_.delay(id, clock_->now() + *pause);
+        return Response{true, std::format("OK, retry {} of {} in {}s", failed + 1, retry_.attempts(),
+                                          pause->count())};
+    }
     end_lease(id);
-    transition_to(id, State::Failed);
+    states_.commit(id, State::Failed);
+    failures_.erase(id);
     record(id, name(State::Leased), State::Failed);
     return Response{true, "OK"};
 }
@@ -327,12 +338,13 @@ Response Service::release(TaskId id) {
 }
 
 Response Service::status(TaskId id) const {
-    const State state = state_of(id);
+    const State state = states_.state_of(id);
     if (state == State::Pending) {
         // Задача в состоянии Pending обязана лежать в очереди.
         std::string text = "pending in " + store_.queue_of(id).value();
-        if (const auto until = store_.not_before(id); until && *until > clock_()) {
-            const auto left = std::chrono::ceil<std::chrono::seconds>(*until - clock_());
+        const Instant now = clock_->now();
+        if (const auto until = store_.not_before(id); until && *until > now) {
+            const auto left = std::chrono::ceil<std::chrono::seconds>(*until - now);
             text += std::format(", delayed for {}s", left.count());
         }
         return Response{true, std::move(text)};
@@ -348,7 +360,7 @@ Response Service::status(TaskId id) const {
 }
 
 Response Service::type_of(TaskId id) const {
-    const State state = state_of(id);
+    const State state = states_.state_of(id);
     if (state == State::Pending) {
         return Response{true, std::string(store_.find(id)->get().type_name())};
     }
@@ -362,10 +374,8 @@ Response Service::type_of(TaskId id) const {
 Response Service::bump(TaskId id, std::optional<std::int64_t> step) {
     // BUMP меняет только ожидающую задачу: менять аргумент работы, которую
     // воркер уже выполняет, бессмысленно.
-    const State state = state_of(id);
-    if (state != State::Pending) {
-        throw WrongStateError(id, state, "BUMP");
-    }
+    // Этап 9: правило «только ожидающая» — в одной точке, Lifecycle.
+    states_.require_state(id, State::Pending, "BUMP");
     Task& task = store_.find(id)->get();
     // Этап 4: вид тела определяет класс, проверка — dynamic_cast внутри as.
     NumericPayload* const number = task.as<NumericPayload>();
@@ -445,11 +455,8 @@ Response Service::list(QueueName queue, std::optional<MinPriority> min_priority,
 // пропускает её, пока не наступит её время. Повторный DELAY переносит срок,
 // DELAY 0 — снимает задержку.
 Response Service::delay(TaskId id, std::chrono::seconds by) {
-    const State state = state_of(id);
-    if (state != State::Pending) {
-        throw WrongStateError(id, state, "DELAY");
-    }
-    store_.delay(id, clock_() + by);
+    states_.require_state(id, State::Pending, "DELAY");
+    store_.delay(id, clock_->now() + by);
     return Response{true, std::format("OK, delayed for {}s", by.count())};
 }
 
@@ -465,9 +472,12 @@ Response Service::purge(QueueName queue) {
     // Этап 8: ожидающие — это и готовые, и отложенные (pending_ids). Нет
     // очереди — UnknownQueueError. Проверки и фиксация — for_each.
     std::ranges::for_each(store_.pending_ids(queue.name),
-                          [this](TaskId id) { require_transition(id, State::Cancelled); });
+                          [this](TaskId id) { states_.require(id, State::Cancelled); });
     const std::vector<Task> removed = store_.purge(queue.name);
-    std::ranges::for_each(removed, [this](const Task& task) { transition_to(task.id(), State::Cancelled); });
+    std::ranges::for_each(removed, [this](const Task& task) {
+        states_.commit(task.id(), State::Cancelled);
+        failures_.erase(task.id());
+    });
     std::ranges::for_each(removed,
                           [this](const Task& task) { record(task.id(), name(State::Pending), State::Cancelled); });
     return Response{true, std::format("OK purged={}", removed.size())};
@@ -476,11 +486,29 @@ Response Service::purge(QueueName queue) {
 // PEEK <queue>: что выдал бы POLL прямо сейчас, без выдачи. Константный
 // метод: посмотреть — не значит изменить.
 Response Service::peek(QueueName queue) const {
-    const auto next = store_.peek(queue.name, clock_());
+    const auto next = store_.peek(queue.name, clock_->now());
     if (!next) {
         return Response{true, "(empty)"};
     }
     return Response{true, line_of(*next)};
+}
+
+// INFO <id>: когда задача поставлена — по системным часам, в UTC. Время
+// постановки показывают пользователю, поэтому оно настенное (IClock::wall),
+// а не монотонное. Тело и время завершённой задачи не хранятся.
+Response Service::info(TaskId id) const {
+    const State state = states_.state_of(id);
+    const Task* task = nullptr;
+    if (state == State::Pending) {
+        task = &store_.find(id)->get();
+    } else if (state == State::Leased) {
+        task = &leases_.at(id).task;
+    } else {
+        throw WrongStateError(id, state, "INFO");
+    }
+    const auto submitted = std::chrono::floor<std::chrono::seconds>(task->created_at());
+    return Response{true, std::format("id={} {} submitted {:%FT%TZ} failures={}", id, name(state), submitted,
+                                      failures_.contains(id) ? failures_.at(id) : 0u)};
 }
 
 Response Service::execute(std::string_view line) {

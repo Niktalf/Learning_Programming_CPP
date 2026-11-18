@@ -1,12 +1,11 @@
 #include <gtest/gtest.h>
 
-#include <fstream>
 #include <string>
 #include <vector>
 
 #include "chat/errors.hpp"
 #include "chat/server.hpp"
-#include "temp_dir.hpp"
+#include "memory_log.hpp"
 
 using chat::Server;
 using chat::Session;
@@ -95,29 +94,15 @@ TEST(Server, LogoutRemovesUserFromRooms) {
 }
 
 TEST(Server, JournalRecordsSentMessages) {
-    const chat::testing::TempDir dir;
-    const auto path = dir.file("chat.log");
-    {
-        Server server(path);
-        Session alice = server.login("alice");
-        static_cast<void>(server.handle(alice, "/join #a"));
-        static_cast<void>(server.handle(alice, "/join #b"));
-        static_cast<void>(server.handle(alice, "/msg #a hello"));
-        static_cast<void>(server.handle(alice, "/msg #a,#b to both"));
-        static_cast<void>(server.handle(alice, "/msg #absent lost"));   // неудача — не пишется
-    }
-    std::ifstream in(path);
-    std::string line;
-    std::vector<std::string> lines;
-    while (std::getline(in, line)) {
-        lines.push_back(line);
-    }
-    EXPECT_EQ(lines, (std::vector<std::string>{"#a\talice\thello", "#a,#b\talice\tto both"}));
-}
-
-TEST(Server, FailedConstructionLeaksNothing) {
-    const chat::testing::TempDir dir;
-    const int before = chat::testing::open_descriptors();
-    EXPECT_THROW(Server(dir.file("missing") / "chat.log"), chat::ChatError);
-    EXPECT_EQ(chat::testing::open_descriptors(), before);
+    // Этап 9: журнал — порт, и тест подставляет журнал в памяти. Файловая
+    // версия — в test_compose.cpp (kvs_integration_tests).
+    const chat::testing::MemoryLog journal;
+    Server server(chat::ChatStore(), journal.sink());
+    Session alice = server.login("alice");
+    static_cast<void>(server.handle(alice, "/join #a"));
+    static_cast<void>(server.handle(alice, "/join #b"));
+    static_cast<void>(server.handle(alice, "/msg #a hello"));
+    static_cast<void>(server.handle(alice, "/msg #a,#b to both"));
+    static_cast<void>(server.handle(alice, "/msg #absent lost"));   // неудача — не пишется
+    EXPECT_EQ(journal.records(), (std::vector<std::string>{"#a\talice\thello", "#a,#b\talice\tto both"}));
 }

@@ -3,36 +3,30 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
-#include <memory>
 #include <string>
 #include <vector>
 
 #include "taskq/handler.hpp"
 #include "taskq/service.hpp"
 #include "taskq/task_store.hpp"
+#include "manual_clock.hpp"
 
 using std::chrono::seconds;
 using taskq::Service;
 using taskq::Task;
 using taskq::TaskStore;
-using taskq::Timestamp;
+using taskq::Instant;
+using taskq::testing::ManualClock;
 
 namespace {
-
-// Часы, которые идут, только когда им скажут. Копии делят одно время.
-struct ManualClock {
-    std::shared_ptr<Timestamp> now = std::make_shared<Timestamp>(std::chrono::system_clock::now());
-    void advance(seconds by) const { *now += by; }
-    Timestamp operator()() const { return *now; }
-};
 
 std::string reply(Service& service, const std::string& line) {
     return taskq::handle(service, line).text;
 }
 
+// Этап 9: подставные часы — порт IClock, переданный в конструктор.
 Service build_service(const ManualClock& clock) {
-    Service service;
-    service.set_clock(clock);
+    Service service(TaskStore(), clock);
     static_cast<void>(reply(service, "CREATE build"));
     return service;
 }
@@ -46,7 +40,7 @@ TEST(Deadlines, DelayedTaskLeavesTheQueue) {
     store.create_queue("q");
     store.submit("q", Task(1, "a", 9));
     store.submit("q", Task(2, "b"));
-    const Timestamp now = std::chrono::system_clock::now();
+    const Instant now{};   // этап 9: монотонный момент, без настоящих часов
     ASSERT_TRUE(store.delay(1, now + seconds(60)));
     EXPECT_EQ(store.view("q").size(), 1u);   // в очереди — только готовая
     EXPECT_EQ(store.size("q"), 2u);          // ожидающих — обе
@@ -63,7 +57,7 @@ TEST(Deadlines, DueTaskWinsByPriorityEvenBeforePromotion) {
     store.create_queue("q");
     store.submit("q", Task(1, "urgent", 9));
     store.submit("q", Task(2, "routine"));
-    const Timestamp now = std::chrono::system_clock::now();
+    const Instant now{};   // этап 9: монотонный момент, без настоящих часов
     store.delay(1, now + seconds(10));
     EXPECT_EQ(store.front_id("q", now + seconds(10)), 1u);
     const auto taken = store.take("q", now + seconds(10));
@@ -80,7 +74,7 @@ TEST(Deadlines, PromoteReturnsOnlyDueTasksInOrder) {
     store.submit("a", Task(1, "x"));
     store.submit("b", Task(2, "y"));
     store.submit("a", Task(3, "z"));
-    const Timestamp now = std::chrono::system_clock::now();
+    const Instant now{};   // этап 9: монотонный момент, без настоящих часов
     store.delay(1, now + seconds(30));
     store.delay(2, now + seconds(10));
     store.delay(3, now + seconds(90));
@@ -97,7 +91,7 @@ TEST(Deadlines, RedelayMovesTheDeadline) {
     TaskStore store;
     store.create_queue("q");
     store.submit("q", Task(1, "x"));
-    const Timestamp now = std::chrono::system_clock::now();
+    const Instant now{};   // этап 9: монотонный момент, без настоящих часов
     store.delay(1, now + seconds(100));
     store.delay(1, now + seconds(5));
     EXPECT_EQ(store.not_before(1), now + seconds(5));
@@ -106,7 +100,7 @@ TEST(Deadlines, RedelayMovesTheDeadline) {
 }
 
 TEST(Deadlines, PurgeTakesDelayedTasksToo) {
-    const ManualClock clock;
+    ManualClock clock;
     Service service = build_service(clock);
     reply(service, "SUBMIT build a");
     reply(service, "SUBMIT build b");
@@ -117,7 +111,7 @@ TEST(Deadlines, PurgeTakesDelayedTasksToo) {
 }
 
 TEST(Deadlines, ListShowsReadyTasksOnly) {
-    const ManualClock clock;
+    ManualClock clock;
     Service service = build_service(clock);
     reply(service, "SUBMIT build a");
     reply(service, "SUBMIT build b");
@@ -127,7 +121,7 @@ TEST(Deadlines, ListShowsReadyTasksOnly) {
 }
 
 TEST(Deadlines, ExpiredLeaseIsReaped) {
-    const ManualClock clock;
+    ManualClock clock;
     Service service = build_service(clock);
     service.set_lease_timeout(seconds(30));
     reply(service, "SUBMIT build a");
@@ -145,7 +139,7 @@ TEST(Deadlines, ExpiredLeaseIsReaped) {
 }
 
 TEST(Deadlines, AckedLeaseLeavesTheDeadlineIndex) {
-    const ManualClock clock;
+    ManualClock clock;
     Service service = build_service(clock);
     service.set_lease_timeout(seconds(30));
     reply(service, "SUBMIT build a");
@@ -159,7 +153,7 @@ TEST(Deadlines, AckedLeaseLeavesTheDeadlineIndex) {
 TEST(Deadlines, AbandonedAndExpiredCountedOnce) {
     // Задача и брошена (воркер исчез), и просрочена — вернуться должна один
     // раз: список очищается от повторов sort + unique + erase.
-    const ManualClock clock;
+    ManualClock clock;
     Service service = build_service(clock);
     service.set_lease_timeout(seconds(30));
     reply(service, "WORKER w1");
@@ -172,7 +166,7 @@ TEST(Deadlines, AbandonedAndExpiredCountedOnce) {
 }
 
 TEST(Deadlines, ReapPromotesDueDelayedTasks) {
-    const ManualClock clock;
+    ManualClock clock;
     Service service = build_service(clock);
     reply(service, "SUBMIT build a");
     reply(service, "DELAY 1 10");
@@ -180,4 +174,19 @@ TEST(Deadlines, ReapPromotesDueDelayedTasks) {
     EXPECT_EQ(reply(service, "REAP"), std::string("OK returned=0, promoted=1"));
     EXPECT_EQ(service.store().delayed_count(), 0u);
     EXPECT_EQ(reply(service, "LIST build"), std::string("id=1 prio=0 a"));
+}
+
+TEST(Lease, ExpiresAndReturnsTask) {
+    // Этап 9: главный тест этапа для очереди — истечение аренды через десять
+    // минут проверяется мгновенно: подставные часы сдвигаются вручную, и
+    // сборщик (REAP) видит истёкшую аренду в индексе по сроку.
+    ManualClock clock;
+    Service service(TaskStore(), clock);
+    reply(service, "CREATE build");
+    reply(service, "SUBMIT build num:5");
+    reply(service, "POLL build");
+    EXPECT_EQ(reply(service, "STATUS 1"), std::string("leased"));
+    clock.advance(std::chrono::minutes(10));
+    EXPECT_EQ(reply(service, "REAP"), std::string("OK returned=1"));
+    EXPECT_EQ(reply(service, "STATUS 1"), std::string("pending in build"));
 }

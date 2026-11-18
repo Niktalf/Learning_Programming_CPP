@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "kvs/ascii.hpp"
 #include "kvs/convert.hpp"
 #include "kvs/errors.hpp"
 #include "kvs/function_traits.hpp"
@@ -226,7 +227,7 @@ public:
                     converted);
             };
         };
-        const auto [it, inserted] = table_.try_emplace(upper(name), Entry{effect, std::move(binder)});
+        const auto [it, inserted] = table_.try_emplace(upper_ascii(name), Entry{effect, std::move(binder)});
         if (!inserted) {
             throw std::logic_error("command registered twice: " + name);
         }
@@ -239,7 +240,7 @@ public:
         if (tokens.empty()) {
             throw ParseError("empty command", std::string(line));
         }
-        const auto it = table_.find(upper(tokens.front()));
+        const auto it = table_.find(upper_ascii(tokens.front()));
         if (it == table_.end()) {
             throw ParseError("unknown command: " + std::string(tokens.front()), std::string(line));
         }
@@ -267,19 +268,11 @@ private:
         Binder binder;
     };
 
-    [[nodiscard]] static std::string upper(std::string_view text) {
-        std::string result(text.size(), '\0');
-        std::ranges::transform(text, result.begin(), [](char c) {
-            return (c >= 'a' && c <= 'z') ? static_cast<char>(c - 'a' + 'A') : c;
-        });
-        return result;
-    }
-
     // «SET expects 2 arguments», «INCR expects 1 or 2 arguments»,
     // «MSET expects at least 2 arguments» — из формы параметров, а не руками.
     [[nodiscard]] static std::string expects(const std::string& name, std::size_t minimum,
                                              std::size_t maximum) {
-        const std::string verb = upper(name);
+        const std::string verb = upper_ascii(name);
         const auto plural = [](std::size_t n) { return n == 1 ? " argument" : " arguments"; };
         if (maximum == static_cast<std::size_t>(-1)) {
             return verb + " expects at least " + std::to_string(minimum) + plural(minimum);

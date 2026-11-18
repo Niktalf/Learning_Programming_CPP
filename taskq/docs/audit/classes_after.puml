@@ -1,0 +1,69 @@
+@startuml classes_after
+' Этап 9: классы TASKQ после рефакторинга. Интерфейсы лежат у потребителя;
+' конкретные классы создаёт только точка сборки make_service.
+skinparam classAttributeIconSize 0
+hide empty members
+
+package "консольный клиент" {
+  class main <<program>>
+}
+
+package "точка сборки (compose.hpp / compose.cpp)" #EEFFEE {
+  class Config
+  class "make_service()" as MakeService <<function>>
+}
+
+package "ядро" {
+  class Service {
+    +Service(TaskStore, const IClock&, unique_ptr<ILogSink>, RetryPolicy)
+    команды, аренды, воркеры
+  }
+  class Lifecycle {
+    state_of / require / require_state / commit
+  }
+  class RetryPolicy <<Pure Fabrication>>
+  interface ILogSink <<port, journal.hpp>>
+  interface IClock <<port, clock.hpp>> {
+    now() : steady — сроки
+    wall() : system — время постановки
+  }
+  class SystemClocks
+  class "BasicTaskStore<T>" as Store {
+    +BasicTaskStore(unique_ptr<ITaskIndex>, const IClock&)
+  }
+  interface "ITaskIndex<IndexEntry>" as IIndex <<port, task_index.hpp>>
+  class "CommandRegistry<Service>" as Registry
+  class Task
+  class Worker
+}
+
+package "адаптеры" {
+  package "engines.hpp" {
+    class StdTaskIndex
+    class TableTaskIndex
+    class "make_task_index<>()" as MakeIndex
+  }
+  package "log.hpp" {
+    class AppendOnlyLog
+  }
+}
+
+main --> MakeService : Config из аргументов
+MakeService ..> MakeIndex
+MakeService ..> AppendOnlyLog
+MakeService --> Service : собирает
+Service *-- Store
+Service *-- Lifecycle
+Service *-- RetryPolicy
+Service o-- "0..1" ILogSink
+Service o-- IClock
+Service ..> Registry
+Service o-- Worker
+Store *-- IIndex
+Store o-- IClock
+Store *-- Task
+IClock <|.. SystemClocks
+ILogSink <|.. AppendOnlyLog
+IIndex <|.. StdTaskIndex
+IIndex <|.. TableTaskIndex
+@enduml

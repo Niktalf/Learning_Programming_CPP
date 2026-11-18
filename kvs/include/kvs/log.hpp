@@ -2,7 +2,12 @@
 
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
+
+#include "kvs/journal.hpp"
 
 namespace kvs {
 
@@ -20,7 +25,10 @@ namespace kvs {
 // поле-объекте, а не в сыром дескрипторе.
 //
 // На этапе 15 по тому же образцу будут жить сокеты и сессии.
-class AppendOnlyLog {
+//
+// Этап 9: файловая реализация порта ILogSink (journal.hpp). Сервер о ней
+// не знает; создаёт её точка сборки (src/compose.cpp).
+class AppendOnlyLog final : public ILogSink {
 public:
     explicit AppendOnlyLog(const std::filesystem::path& path);
 
@@ -30,14 +38,28 @@ public:
     AppendOnlyLog& operator=(const AppendOnlyLog&) = delete;
     AppendOnlyLog(AppendOnlyLog&&) noexcept = default;
     AppendOnlyLog& operator=(AppendOnlyLog&&) noexcept = default;
-    ~AppendOnlyLog() = default;
+    ~AppendOnlyLog() override = default;
 
     // Запись одной строки. Сбрасывается на диск сразу: журнал, теряющий
     // хвост при падении процесса, бесполезен. Ошибка записи — KvError.
-    void append(std::string_view record);
+    void append(std::string_view record) override;
 
 private:
     std::ofstream out_;
+};
+
+// Этап 9: файловая реализация порта ILogSource — записи журнала для
+// восстановления. Файла нет — записей нет: первый запуск с --log — не
+// ошибка. До этапа 9 эта проверка жила в конструкторе сервера.
+class FileHistory final : public ILogSource {
+public:
+    explicit FileHistory(std::filesystem::path path) : path_(std::move(path)) {}
+
+    [[nodiscard]] std::vector<std::string> records() const override;
+    [[nodiscard]] std::string name() const override { return path_.string(); }
+
+private:
+    std::filesystem::path path_;
 };
 
 }  // namespace kvs

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <string_view>
 
+#include "taskq/ascii.hpp"
 #include "taskq/registry.hpp"
 
 namespace taskq {
@@ -38,14 +39,6 @@ struct Command {
 
 namespace detail {
 
-[[nodiscard]] constexpr char upper_ascii(char c) noexcept {
-    return (c >= 'a' && c <= 'z') ? static_cast<char>(c - 'a' + 'A') : c;
-}
-
-[[nodiscard]] constexpr bool same_verb(std::string_view a, std::string_view b) noexcept {
-    return std::ranges::equal(a, b, {}, upper_ascii, upper_ascii);
-}
-
 // Все ли имена различны без учёта регистра. Этап 8: алгоритмы вместо
 // двойного цикла — отсортировать без учёта регистра и найти соседей-
 // повторов. sort и adjacent_find — constexpr с C++20, так что всё это
@@ -53,7 +46,8 @@ namespace detail {
 template <std::size_t N>
 [[nodiscard]] constexpr bool distinct_verbs(std::array<std::string_view, N> names) noexcept {
     const auto less = [](std::string_view a, std::string_view b) {
-        return std::ranges::lexicographical_compare(a, b, {}, upper_ascii, upper_ascii);
+        return std::ranges::lexicographical_compare(a, b, {}, [](char c) { return upper_ascii(c); },
+                                                    [](char c) { return upper_ascii(c); });
     };
     std::ranges::sort(names, less);
     return std::ranges::adjacent_find(names, same_verb) == names.end();
@@ -82,7 +76,7 @@ public:
     // Есть ли команда — вопрос, на который реестр отвечает при компиляции.
     [[nodiscard]] static constexpr bool contains(std::string_view verb) noexcept {
         return std::ranges::any_of(names_, [verb](std::string_view name) {
-            return detail::same_verb(name, verb);
+            return same_verb(name, verb);
         });
     }
 

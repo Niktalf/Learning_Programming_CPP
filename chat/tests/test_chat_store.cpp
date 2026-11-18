@@ -5,6 +5,10 @@
 #include <vector>
 
 #include "chat/chat_store.hpp"
+// Этап 9: хранилище видит только объявление фабрики данных. Для комнаты
+// ChatStore она инстанцирована в ядре; для тестовых типов сообщения
+// определение нужно здесь — поэтому тест включает реализации.
+#include "chat/engines.hpp"
 #include "tracked.hpp"
 
 using chat::BasicChatStore;
