@@ -1,0 +1,27 @@
+@startuml sequence_cycle_before
+' Этап 9: тот же цикл на теге v08 — до рефакторинга. Часы — std::function с
+' system_clock внутри, журнал — AppendOnlyLog, открытый сервисом по пути.
+autonumber
+actor Клиент
+participant "Service" as Service
+participant "BasicTaskStore" as Store
+participant "ITaskIndex" as Index
+participant "AppendOnlyLog" as Log
+database "файл журнала" as File
+actor Воркер
+
+Клиент -> Service : SUBMIT build num:5
+Service -> Store : submit_batch([Task]) — время постановки не записывается
+Store -> Index : insert
+Service -> Service : states_.merge — состояния в самом сервисе
+Service -> Log : append
+Log -> File : << строка
+Воркер -> Service : POLL build w1
+Service -> Service : now = clock_() — system_clock::now()\nсрок аренды = now + timeout: по настенным часам
+Service -> Service : require_transition / transition_to — в самом сервисе
+Service -> Store : take("build", now)
+Service -> Log : append
+Воркер -> Service : ACK 1
+Service -> Service : require_transition, leases_ ...
+Service -> Log : append
+@enduml

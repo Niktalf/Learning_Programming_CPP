@@ -1,6 +1,7 @@
 #include "chat/commands.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -15,12 +16,14 @@
 
 #include "chat/errors.hpp"
 #include "chat/message.hpp"
+#include "chat/reply.hpp"
 
 namespace chat {
 namespace {
 
+// Этап 9: формат ответа — дело Reply (reply.hpp, Pure Fabrication).
 [[nodiscard]] Response ok(std::string text) {
-    return Response{true, std::move(text)};
+    return Reply::ok(std::move(text));
 }
 
 // Сообщение вида :thumbsup: — реакция, а не текст. Отдельной команды для
@@ -83,29 +86,6 @@ void require_room(const ChatStore& store, std::string_view room) {
     return stamped(store, make_notice(author, std::move(text)));
 }
 
-// Склейка строк через перевод строки — views::join_with из C++23.
-[[nodiscard]] std::string joined(const std::vector<std::string>& lines, const char* empty) {
-    if (lines.empty()) {
-        return empty;
-    }
-    return std::ranges::to<std::string>(lines | std::views::join_with('\n'));
-}
-
-// Строки ответа истории: «номер: <автор> текст», с отметкой времени —
-// «номер @ms: <автор> текст». Этап 8: transform вместо цикла с push_back.
-[[nodiscard]] std::vector<std::string> lines_of(const std::vector<ChatStore::Entry>& entries, bool with_time) {
-    std::vector<std::string> lines;
-    lines.reserve(entries.size());
-    std::ranges::transform(entries, std::back_inserter(lines), [with_time](const ChatStore::Entry& entry) {
-        const IMessage& item = *entry.message.get();
-        if (with_time) {
-            return std::format("{} @{}: <{}> {}", entry.index, item.id().timestamp, item.author(), item.to_string());
-        }
-        return std::format("{}: <{}> {}", entry.index, item.author(), item.to_string());
-    });
-    return lines;
-}
-
 // Запись журнала: комнаты через запятую, автор и текст через табуляцию.
 // Табуляции в тексте быть не может — convert отвергает управляющие символы.
 [[nodiscard]] std::string record_of(const std::string& author, const RoomList& rooms,
@@ -156,7 +136,7 @@ Response who(Context& call, RoomName room) {
         throw UnknownRoomError(std::string(room.name));
     }
     const auto nicks = *members | std::views::transform([](const auto& user) { return user->nick(); });
-    return ok(joined(std::ranges::to<std::vector<std::string>>(nicks), "(empty)"));
+    return Reply::lines(std::ranges::to<std::vector<std::string>>(nicks));
 }
 
 // /history #room [limit] [nick]: два необязательных аргумента подряд — и
@@ -170,7 +150,7 @@ Response history(Context& call, RoomName room, std::optional<std::size_t> limit,
     if (!selected) {
         throw UnknownRoomError(std::string(room.name));
     }
-    return ok(joined(lines_of(*selected, false), "(empty)"));
+    return Reply::history(*selected, false);
 }
 
 // Этап 8: история по времени. /since #room <ms> [limit] — первые limit
@@ -185,7 +165,7 @@ Response since(Context& call, RoomName room, std::uint64_t moment, std::optional
     if (!selected) {
         throw UnknownRoomError(std::string(room.name));
     }
-    return ok(joined(lines_of(*selected, true), "(empty)"));
+    return Reply::history(*selected, true);
 }
 
 Response until(Context& call, RoomName room, std::uint64_t moment, std::optional<std::size_t> limit) {
@@ -194,7 +174,7 @@ Response until(Context& call, RoomName room, std::uint64_t moment, std::optional
     if (!selected) {
         throw UnknownRoomError(std::string(room.name));
     }
-    return ok(joined(lines_of(*selected, true), "(empty)"));
+    return Reply::history(*selected, true);
 }
 
 Response type_of(Context& call, RoomName room, std::size_t index) {
@@ -290,7 +270,21 @@ Response rooms(Context& call, std::optional<RoomName> after, std::optional<std::
     if (page.more) {
         lines.push_back(std::format("(more: /rooms {} {})", page.names.back(), size));
     }
-    return ok(joined(lines, "(no rooms)"));
+    return Reply::lines(lines, "(no rooms)");
+}
+
+// --- Этап 9 ---------------------------------------------------------------
+
+// /whois nick: простой пользователя — секунд с его последней команды, как
+// idle в WHOIS у IRC. Время — монотонное, от часов хранилища (IClock):
+// тест сдвигает подставные часы и получает ответ мгновенно.
+Response whois(Context& call, Nick target) {
+    const auto idle = call.store.idle_time(target.name);
+    if (!idle) {
+        throw UnknownUserError(std::string(target.name));
+    }
+    return ok(std::format("{}, idle {}s", target.name,
+                          std::chrono::duration_cast<std::chrono::seconds>(*idle).count()));
 }
 
 }  // namespace
@@ -312,7 +306,8 @@ const CommandRegistry<Context>& commands() {
             .register_command("/kick", kick)
             .register_command("/rooms", rooms)
             .register_command("/since", since)
-            .register_command("/until", until);
+            .register_command("/until", until)
+            .register_command("/whois", whois);
         return table;
     }();
     return registry;

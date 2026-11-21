@@ -1,0 +1,38 @@
+@startuml sequence_msg_before
+' Этап 9: /msg #a,#b hi на теге v08 — до журнала и до рассылки.
+autonumber
+actor Клиент
+participant "main" as Main
+participant "Server" as Server
+participant "CommandRegistry" as Registry
+participant "message()" as Handler
+participant "BasicChatStore" as Store
+participant "история #a" as A
+participant "история #b" as B
+participant "AppendOnlyLog" as Log
+database "файл журнала" as File
+
+Клиент -> Main : «/msg #a,#b hi»
+Main -> Server : handle(session, line)
+Server -> Registry : bind(line)
+Registry --> Server : Bound
+Server -> Handler : (Context{store, session, &log})
+loop каждая комната
+  Handler -> Store : contains, is_member
+end
+Handler -> Store : next_message_id(author)\n(часы — std::function внутри хранилища)
+Handler -> Store : post_many([#a, #b], message)
+Store -> Store : подготовка: копии, запас ёмкости,\nузлы индекса по времени
+Store -> A : push_back(копия)
+Store -> B : push_back(оригинал)
+note right of Store
+  «Рассылка» здесь — запись в истории
+  нескольких комнат. Доставки участникам
+  ещё нет: её место — этап 15.
+end note
+Handler -> Log : append("#a,#b\\talice\\thi")\n(конкретный класс через Context)
+Log -> File : << строка, flush
+Handler --> Server : Response{"OK"}
+Server --> Main : Response
+Main --> Клиент : OK
+@enduml

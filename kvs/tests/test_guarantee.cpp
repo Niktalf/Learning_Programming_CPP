@@ -9,6 +9,10 @@
 #include <utility>
 #include <vector>
 
+// Этап 9: хранилище видит только объявление фабрики движков. Для записи
+// Store она инстанцирована в ядре; для тестовых типов значения определение
+// нужно здесь — поэтому тест включает реализации движков.
+#include "kvs/engines.hpp"
 #include "kvs/errors.hpp"
 #include "kvs/ivalue.hpp"
 #include "kvs/store.hpp"

@@ -8,7 +8,7 @@
 #include <string_view>
 #include <utility>
 
-#include "chat/server.hpp"
+#include "chat/compose.hpp"
 #include "chat/validate.hpp"
 
 namespace {
@@ -32,6 +32,7 @@ void print_help() {
   /rooms [#after] [count]           rooms in alphabetical order, one page at a time
   /since <#room> <ms> [limit]       first messages at or after a time (ms since epoch)
   /until <#room> <ms> [limit]       last messages at or before a time
+  /whois <nick>                     how long a user has been idle
   DEMO                              capture by reference vs by value
   HELP / QUIT
 )");
@@ -108,8 +109,12 @@ int main(int argc, char* argv[]) {
     // кучи, — только затем, чтобы конструктор оказался внутри try.
     std::optional<chat::Server> server;
     try {
-        server.emplace(arguments->engine, arguments->log ? std::optional<std::filesystem::path>(*arguments->log)
-                                                         : std::nullopt);
+        chat::Config config;
+        config.engine = arguments->engine;
+        if (arguments->log) {
+            config.log = *arguments->log;
+        }
+        server.emplace(chat::make_server(config));
     } catch (const std::exception& e) {
         std::println(stderr, "cannot start: {}", e.what());
         return 1;
@@ -117,7 +122,7 @@ int main(int argc, char* argv[]) {
     // Реестр пуст, ник не может быть занят.
     chat::Session session = server->login(arguments->nick);
 
-    std::println("CHAT, stage 8, engine {}, you are {}", server->store().engine_name(), session.nick);
+    std::println("CHAT, stage 9, engine {}, you are {}", server->store().engine_name(), session.nick);
     print_help();
 
     std::string raw;   // объявлена до цикла: в неё читает std::getline

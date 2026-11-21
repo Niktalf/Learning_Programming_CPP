@@ -1,6 +1,7 @@
 #include "kvs/commands.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -16,13 +17,15 @@
 #include "kvs/errors.hpp"
 #include "kvs/ivalue.hpp"
 #include "kvs/lexer.hpp"
+#include "kvs/reply.hpp"
 #include "kvs/value.hpp"
 
 namespace kvs {
 namespace {
 
+// Этап 9: формат ответа — дело Reply (reply.hpp, Pure Fabrication).
 [[nodiscard]] Response ok(std::string text) {
-    return Response{true, std::move(text)};
+    return Reply::ok(std::move(text));
 }
 
 // Сложение с проверкой переполнения. Необходимость нашёл фаззер этапа 3:
@@ -180,7 +183,7 @@ Response push(Store& store, std::string_view key, std::string_view item, End end
 // хранилище не бывает, и TYPE пустого списка не нужно придумывать.
 Response pop(Store& store, std::string_view key, End end) {
     if (!store.contains(key)) {
-        return ok("(nil)");
+        return ok(std::string(Reply::nil));
     }
     auto [item, now_empty] = store.modify(key, 0, [&](Value& value) {
         ListValue& items = as_list(key, value);
@@ -218,23 +221,14 @@ Response list_length(Store& store, std::string_view key) {
 Response list_range(Store& store, std::string_view key, std::int64_t start, std::int64_t stop) {
     const auto value = store.lookup(key);
     if (!value) {
-        return ok("(empty)");
+        return ok(std::string(Reply::empty_list));
     }
-    const std::vector<std::string> items = as_list(key, value->get()).range(start, stop);
-    if (items.empty()) {
-        return ok("(empty)");
-    }
-    return ok(std::ranges::to<std::string>(items | std::views::join_with('\n')));
+    return Reply::lines(as_list(key, value->get()).range(start, stop));
 }
 
 Response list_keys(Store& store, std::optional<std::string_view> pattern,
                    std::optional<std::size_t> limit) {
-    const std::vector<std::string> keys =
-        store.keys(pattern.value_or("*"), limit.value_or(default_keys_limit));
-    if (keys.empty()) {
-        return ok("(empty)");
-    }
-    return ok(std::ranges::to<std::string>(keys | std::views::join_with('\n')));
+    return Reply::lines(store.keys(pattern.value_or("*"), limit.value_or(default_keys_limit)));
 }
 
 // --- Этап 8: SCAN и KEYSRANGE --------------------------------------------
@@ -246,25 +240,18 @@ Response scan_keys(Store& store, std::size_t cursor, std::optional<std::string_v
                    std::optional<std::size_t> count) {
     const auto page = store.scan_page(cursor, count.value_or(10), pattern.value_or("*"));
     // Курсор — первой строкой, ключи — следующими: курсор впереди всего
-    // диапазона, и склейка — join_with.
+    // диапазона, и склейка — Reply::lines.
     const std::string cursor_line = std::format("{}", page.next_cursor);
-    const std::vector<std::string_view> lines = [&] {
-        std::vector<std::string_view> all{cursor_line};
-        all.insert(all.end(), page.keys.begin(), page.keys.end());
-        return all;
-    }();
-    return ok(std::ranges::to<std::string>(lines | std::views::join_with('\n')));
+    std::vector<std::string_view> lines{cursor_line};
+    lines.insert(lines.end(), page.keys.begin(), page.keys.end());
+    return Reply::lines(lines);
 }
 
 // KEYSRANGE from to [limit]: ключи от from до to включительно в порядке
 // строк — по упорядоченному индексу.
 Response keys_range(Store& store, std::string_view from, std::string_view to,
                     std::optional<std::size_t> limit) {
-    const std::vector<std::string> keys = store.keys_range(from, to, limit.value_or(default_keys_limit));
-    if (keys.empty()) {
-        return ok("(empty)");
-    }
-    return ok(std::ranges::to<std::string>(keys | std::views::join_with('\n')));
+    return Reply::lines(store.keys_range(from, to, limit.value_or(default_keys_limit)));
 }
 
 Response version_of(Store& store, std::string_view key) {
@@ -299,7 +286,30 @@ Response string_length(Store& store, std::string_view key) {
 // ними другой поток успел бы записать своё, и его значение потерялось бы.
 Response get_and_set(Store& store, std::string_view key, std::string_view value) {
     const std::optional<Value> old = store.exchange(std::string(key), Value(value));
-    return ok(old ? old->to_string() : std::string("(nil)"));
+    return ok(old ? old->to_string() : std::string(Reply::nil));
+}
+
+// --- Этап 9 ---------------------------------------------------------------
+
+// MEMORY: занятый объём и предел. До этапа 9 эту команду обрабатывал
+// консольный клиент сам, мимо реестра, дотягиваясь до хранилища через
+// сервер (закон Деметры, docs/audit.md, запись 8): по сети её не было бы
+// вовсе. Текст ответа прежний.
+Response memory(Store& store) {
+    const auto limit = store.memory_limit();
+    return ok(std::format("used {} bytes, limit {}", store.used_bytes(),
+                          limit ? std::format("{} bytes", *limit) : std::string("none")));
+}
+
+// IDLETIME key: секунд с последней записи ключа, как OBJECT IDLETIME у
+// Redis. Время — от часов хранилища (IClock): тест сдвигает подставные часы
+// и получает ответ мгновенно.
+Response idle_time(Store& store, std::string_view key) {
+    const auto idle = store.idle_time(key);
+    if (!idle) {
+        throw KeyNotFoundError(std::string(key));
+    }
+    return ok(std::format("{}", std::chrono::duration_cast<std::chrono::seconds>(*idle).count()));
 }
 
 }  // namespace
@@ -328,7 +338,9 @@ const CommandRegistry<Store>& commands() {
             .add("VERSION", Effect::Reads, version_of)
             .add("APPEND", Effect::Writes, append)
             .add("STRLEN", Effect::Reads, string_length)
-            .add("GETSET", Effect::Writes, get_and_set);
+            .add("GETSET", Effect::Writes, get_and_set)
+            .add("MEMORY", Effect::Reads, memory)
+            .add("IDLETIME", Effect::Reads, idle_time);
         return table;
     }();
     return registry;

@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "chat/chat_store.hpp"
-#include "chat/engine.hpp"
+#include "chat/engines.hpp"
 #include "chat/errors.hpp"
 #include "chat/message.hpp"
 

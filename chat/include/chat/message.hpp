@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -12,7 +11,12 @@
 
 namespace chat {
 
-using Timestamp = std::chrono::system_clock::time_point;
+// Этап 9: заголовок сообщения — кто написал и идентификатор (номер и
+// отметка времени). Общий для всех видов сообщений.
+struct MessageHeader {
+    std::string author;
+    MessageId id;
+};
 
 // Этап 4: сообщение — иерархия классов вместо std::variant, и комната хранит
 // std::vector<std::unique_ptr<IMessage>>.
@@ -23,22 +27,27 @@ using Timestamp = std::chrono::system_clock::time_point;
 // деструктор наследника — с текстом сообщения — не выполнится. unique_ptr
 // не спасает: он вызывает delete по статическому типу.
 //
-// Общие для всех сообщений поля — автор и время — живут в базе. Это не
-// интерфейс в строгом смысле, а абстрактная база с данными; так проще, чем
-// повторять одни и те же поля в трёх наследниках.
+// Этап 9: композиция вместо наследования данных. До этапа 9 автор, время и
+// идентификатор жили полями в базе, «чтобы не повторять их в трёх
+// наследниках», — переиспользование кода через наследование, а не
+// отношение «является» (docs/audit.md, запись 9). Заодно база хранила время
+// дважды: поле at_, которое никто не заполнял, и отметку в идентификаторе.
+// Теперь IMessage — интерфейс без данных, а каждое сообщение *имеет*
+// заголовок MessageHeader. Доступ к автору и идентификатору — обычные
+// функции интерфейса поверх header(): шаблонный метод (NVI), код у них один.
 class IMessage {
 public:
     virtual ~IMessage() = default;
 
-    [[nodiscard]] const std::string& author() const noexcept { return author_; }
-    [[nodiscard]] Timestamp at() const noexcept { return at_; }
+    [[nodiscard]] const std::string& author() const noexcept { return header().author; }
 
     // Этап 5: идентификатор, который выдаёт хранилище при отправке. Копии
     // сообщения, разосланные в несколько комнат, делаются clone и несут тот
     // же идентификатор: это одно сообщение.
-    [[nodiscard]] const MessageId& id() const noexcept { return id_; }
-    void assign_id(MessageId id) noexcept { id_ = std::move(id); }
+    [[nodiscard]] const MessageId& id() const noexcept { return header().id; }
+    void assign_id(MessageId id) noexcept { header().id = std::move(id); }
 
+    [[nodiscard]] virtual const MessageHeader& header() const noexcept = 0;
     [[nodiscard]] virtual std::string_view type_name() const noexcept = 0;
     [[nodiscard]] virtual std::string to_string() const = 0;
     [[nodiscard]] virtual std::size_t size() const noexcept = 0;
@@ -50,24 +59,23 @@ public:
     [[nodiscard]] virtual std::unique_ptr<IMessage> clone() const = 0;
 
 protected:
-    IMessage(std::string author, Timestamp at) noexcept : author_(std::move(author)), at_(at) {}
+    IMessage() = default;
     // Копирование базы — только для наследников, иначе объект обрезался бы.
     IMessage(const IMessage&) = default;
     IMessage& operator=(const IMessage&) = default;
 
-private:
-    std::string author_;
-    Timestamp at_;
-    MessageId id_;
+    // Изменяемый заголовок — только для assign_id.
+    [[nodiscard]] virtual MessageHeader& header() noexcept = 0;
 };
 
 using MessagePtr = std::unique_ptr<IMessage>;
 
 class TextMessage final : public IMessage {
 public:
-    TextMessage(std::string author, std::string text, Timestamp at = Timestamp{}) noexcept
-        : IMessage(std::move(author), at), text_(std::move(text)) {}
+    TextMessage(std::string author, std::string text) noexcept
+        : header_{std::move(author), {}}, text_(std::move(text)) {}
 
+    [[nodiscard]] const MessageHeader& header() const noexcept override { return header_; }
     [[nodiscard]] std::string_view type_name() const noexcept override { return "text"; }
     [[nodiscard]] std::string to_string() const override { return text_; }
     [[nodiscard]] std::size_t size() const noexcept override { return text_.size(); }
@@ -76,31 +84,38 @@ public:
     [[nodiscard]] const std::string& text() const noexcept { return text_; }
 
 private:
+    [[nodiscard]] MessageHeader& header() noexcept override { return header_; }
+
+    MessageHeader header_;
     std::string text_;
 };
 
 // Системное уведомление: вошёл, вышел, сменил тему.
 class SystemMessage final : public IMessage {
 public:
-    SystemMessage(std::string author, std::string text, Timestamp at = Timestamp{}) noexcept
-        : IMessage(std::move(author), at), text_(std::move(text)) {}
+    SystemMessage(std::string author, std::string text) noexcept
+        : header_{std::move(author), {}}, text_(std::move(text)) {}
 
+    [[nodiscard]] const MessageHeader& header() const noexcept override { return header_; }
     [[nodiscard]] std::string_view type_name() const noexcept override { return "notice"; }
     [[nodiscard]] std::string to_string() const override { return "* " + text_; }
     [[nodiscard]] std::size_t size() const noexcept override { return text_.size(); }
     [[nodiscard]] MessagePtr clone() const override;
 
 private:
+    [[nodiscard]] MessageHeader& header() noexcept override { return header_; }
+
+    MessageHeader header_;
     std::string text_;
 };
 
 // Реакция :name: со счётчиком. Единственное изменяемое сообщение.
 class ReactionMessage final : public IMessage {
 public:
-    ReactionMessage(std::string author, std::string emoji, std::int64_t count = 1,
-                    Timestamp at = Timestamp{}) noexcept
-        : IMessage(std::move(author), at), emoji_(std::move(emoji)), count_(count) {}
+    ReactionMessage(std::string author, std::string emoji, std::int64_t count = 1) noexcept
+        : header_{std::move(author), {}}, emoji_(std::move(emoji)), count_(count) {}
 
+    [[nodiscard]] const MessageHeader& header() const noexcept override { return header_; }
     [[nodiscard]] std::string_view type_name() const noexcept override { return "reaction"; }
     [[nodiscard]] std::string to_string() const override;
     [[nodiscard]] std::size_t size() const noexcept override { return emoji_.size(); }
@@ -111,6 +126,9 @@ public:
     void set_count(std::int64_t count) noexcept { count_ = count; }
 
 private:
+    [[nodiscard]] MessageHeader& header() noexcept override { return header_; }
+
+    MessageHeader header_;
     std::string emoji_;
     std::int64_t count_;
 };

@@ -18,6 +18,10 @@
 #include "taskq/payload.hpp"
 #include "taskq/task.hpp"
 #include "taskq/task_store.hpp"
+// Этап 9: хранилище видит только объявление фабрики индекса. Для задачи
+// Task она инстанцирована в ядре; для тестовых типов определение нужно
+// здесь — поэтому тест включает реализации индекса.
+#include "taskq/engines.hpp"
 
 namespace {
 

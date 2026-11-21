@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "taskq/ascii.hpp"
 #include "taskq/convert.hpp"
 #include "taskq/errors.hpp"
 #include "taskq/function_traits.hpp"
@@ -285,14 +286,6 @@ template <class... Params>
     return usage;
 }
 
-[[nodiscard]] inline std::string upper(std::string_view text) {
-    std::string result(text.size(), '\0');
-    std::ranges::transform(text, result.begin(), [](char c) {
-        return (c >= 'a' && c <= 'z') ? static_cast<char>(c - 'a' + 'A') : c;
-    });
-    return result;
-}
-
 }  // namespace detail
 
 // Концепция обработчика команды. Что требуется, по порядку:
@@ -356,7 +349,7 @@ public:
         using Shape = typename Parts::shape;
         constexpr bool reads_only = std::is_same_v<typename Parts::first, const Context&>;
 
-        std::string verb = detail::upper(name);
+        std::string verb = upper_ascii(name);
         std::string usage = "usage: " + detail::usage_for(verb, std::type_identity<Params>{});
         Binder binder = [handler = std::move(handler), usage = std::move(usage)](
                             TokenCursor& cursor,
@@ -400,7 +393,7 @@ public:
         if (!verb) {
             throw ParseError("empty command", std::string(line));
         }
-        const auto it = table_.find(detail::upper(*verb));
+        const auto it = table_.find(upper_ascii(*verb));
         if (it == table_.end()) {
             throw ParseError("unknown command: " + std::string(*verb), std::string(line));
         }

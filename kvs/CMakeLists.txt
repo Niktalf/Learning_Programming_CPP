@@ -45,7 +45,10 @@ add_library(kvs_core
     src/bytes.cpp
     src/lexer.cpp
     src/commands.cpp
-    src/owning_buffer.cpp)
+    src/owning_buffer.cpp
+    src/engines.cpp
+    src/reply.cpp
+    src/compose.cpp)
 target_include_directories(kvs_core PUBLIC include)
 target_link_libraries(kvs_core PRIVATE kvs_warnings)
 
@@ -67,8 +70,6 @@ add_executable(kvs_tests
     tests/test_result.cpp
     tests/test_fuzz.cpp
     tests/test_hierarchy.cpp
-    tests/test_log.cpp
-    tests/test_file.cpp
     tests/test_cache.cpp
     tests/test_cycle.cpp
     tests/test_concepts.cpp
@@ -84,9 +85,22 @@ add_executable(kvs_tests
     tests/test_invalidation.cpp
     tests/test_hash_tables.cpp
     tests/test_engines.cpp
-    tests/test_scan.cpp)
+    tests/test_scan.cpp
+    tests/test_clock.cpp)
 target_include_directories(kvs_tests PRIVATE tools tests)
 target_link_libraries(kvs_tests PRIVATE kvs_core kvs_warnings GTest::gtest_main)
+
+# Этап 9: тесты, которым нужна файловая система, — отдельно. Модульные
+# тесты (kvs_tests) не пишут файлов и не смотрят на часы: журнал и часы —
+# порты с подставными реализациями. Здесь — файловые адаптеры и точка
+# сборки с настоящими файлами; метка integration отделяет их в ctest
+# (ctest -LE integration — только модульные).
+add_executable(kvs_integration_tests
+    tests/test_log.cpp
+    tests/test_file.cpp
+    tests/test_compose.cpp)
+target_include_directories(kvs_integration_tests PRIVATE tools tests)
+target_link_libraries(kvs_integration_tests PRIVATE kvs_core kvs_warnings GTest::gtest_main)
 
 # Звёздочка: порядок вызовов конструкторов при вставке в std::map.
 add_executable(kvs_insert_order tools/insert_order.cpp)
@@ -139,10 +153,11 @@ add_test(NAME kvs_invalidation_detected
 include(GoogleTest)
 gtest_discover_tests(kvs_tests)
 gtest_discover_tests(kvs_alloc_tests)
+gtest_discover_tests(kvs_integration_tests PROPERTIES LABELS integration)
 
 # Этап 8: тот же набор тестов на каждом движке хранилища, без единой правки
 # в тестах. Движок по умолчанию берётся из переменной окружения KVS_ENGINE
-# (engine.hpp), и ctest запускает набор ещё трижды — на собственной
+# (engine_kind.hpp), и ctest запускает набор ещё трижды — на собственной
 # хеш-таблице, на ней же с заведомо плохой хеш-функцией и на открытой
 # адресации. Имена тестов получают приставку движка: hash/Store.SetGetDelete.
 foreach(engine hash bad-hash open)

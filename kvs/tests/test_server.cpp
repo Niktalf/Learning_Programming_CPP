@@ -1,15 +1,11 @@
 #include <gtest/gtest.h>
 
-#include <filesystem>
-#include <optional>
 #include <string>
 #include <vector>
 
 #include "kvs/errors.hpp"
-#include "kvs/file.hpp"
-#include "kvs/log.hpp"
 #include "kvs/server.hpp"
-#include "temp_dir.hpp"
+#include "memory_log.hpp"
 
 using kvs::Server;
 
@@ -78,7 +74,7 @@ TEST(Server, FailedCommandDoesNotCorruptState) {
 }
 
 TEST(Server, MemoryLimitBecomesResponse) {
-    Server server(Server::Options{8, std::nullopt});
+    Server server(kvs::Store(8));
     EXPECT_TRUE(server.handle("SET k 1234").ok);
     const auto r = server.handle("MSET a 1 b 1234567");
     EXPECT_FALSE(r.ok);
@@ -98,68 +94,54 @@ TEST(Server, OverflowBecomesResponse) {
 }
 
 // --- Этап 4: журнал и кэш на уровне сервера --------------------------------
+//
+// Этап 9: журнал — порты, и тесты подставляют журнал в памяти. До этапа 9
+// эти тесты писали во временный каталог; файловые версии — в
+// test_compose.cpp, в отдельной программе kvs_integration_tests.
 
-namespace {
-
-Server::Options with_log(const std::filesystem::path& path) {
-    return Server::Options{std::nullopt, path};
-}
-
-}  // namespace
+using kvs::testing::MemoryLog;
 
 TEST(Server, JournalRestoresStateAfterRestart) {
-    const kvs::testing::TempDir dir;
-    const auto path = dir.file("journal.log");
+    const MemoryLog journal;
     {
-        Server server(with_log(path));
+        Server server(kvs::Store(), journal.sink());
         static_cast<void>(server.handle("SET a 1"));
         static_cast<void>(server.handle("RPUSH list x"));
         static_cast<void>(server.handle("RPUSH list y"));
         static_cast<void>(server.handle("INCR counter 5"));
         static_cast<void>(server.handle("DEL a"));
     }
-    Server restarted(with_log(path));
+    Server restarted(kvs::Store(), journal.sink(), &journal);
     EXPECT_EQ(restarted.handle("LLEN list").text, std::string("2"));
     EXPECT_EQ(restarted.handle("GET counter").text, std::string("5"));
     EXPECT_FALSE(restarted.handle("GET a").ok);
 }
 
 TEST(Server, OnlySuccessfulChangesAreJournaled) {
-    const kvs::testing::TempDir dir;
-    const auto path = dir.file("journal.log");
-    {
-        Server server(with_log(path));
-        static_cast<void>(server.handle("SET a text"));
-        static_cast<void>(server.handle("GET a"));      // чтение — не пишется
-        static_cast<void>(server.handle("INCR a"));     // неудача — не пишется
-        static_cast<void>(server.handle("FROB a"));     // не разобрано — не пишется
-    }
-    EXPECT_EQ(kvs::read_lines(path), (std::vector<std::string>{"SET a text"}));
+    const MemoryLog journal;
+    Server server(kvs::Store(), journal.sink());
+    static_cast<void>(server.handle("SET a text"));
+    static_cast<void>(server.handle("GET a"));      // чтение — не пишется
+    static_cast<void>(server.handle("INCR a"));     // неудача — не пишется
+    static_cast<void>(server.handle("FROB a"));     // не разобрано — не пишется
+    EXPECT_EQ(journal.records(), (std::vector<std::string>{"SET a text"}));
+}
+
+TEST(Server, ReplayIsNotJournaledAgain) {
+    // Восстановленные записи не дописываются в журнал второй раз.
+    const MemoryLog journal(std::vector<std::string>{"SET a 1"});
+    const Server server(kvs::Store(), journal.sink(), &journal);
+    EXPECT_EQ(journal.records(), (std::vector<std::string>{"SET a 1"}));
 }
 
 TEST(Server, CorruptJournalStopsStartupWithContext) {
-    const kvs::testing::TempDir dir;
-    const auto path = dir.file("journal.log");
-    {
-        kvs::AppendOnlyLog log(path);
-        log.append("SET a 1");
-        log.append("FROB a");
-    }
+    const MemoryLog journal(std::vector<std::string>{"SET a 1", "FROB a"});
     try {
-        const Server server(with_log(path));
+        const Server server(kvs::Store(), nullptr, &journal);
         ADD_FAILURE() << "constructor must throw";
     } catch (const kvs::KvError& e) {
-        EXPECT_NE(std::string(e.what()).find("line 2"), std::string::npos) << e.what();
+        EXPECT_NE(std::string(e.what()).find("memory line 2"), std::string::npos) << e.what();
     }
-}
-
-TEST(Server, FailedConstructionLeaksNothing) {
-    // Конструктор бросил — деструктор Server не вызовется, но уже
-    // построенные поля разрушатся. Дескрипторы это подтверждают.
-    const kvs::testing::TempDir dir;
-    const int before = kvs::testing::open_descriptors();
-    EXPECT_THROW(Server(with_log(dir.file("missing") / "journal.log")), kvs::KvError);
-    EXPECT_EQ(kvs::testing::open_descriptors(), before);
 }
 
 TEST(Server, ListCommands) {

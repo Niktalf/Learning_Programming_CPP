@@ -28,7 +28,8 @@ const CommandRegistry<Service>& Service::commands() {
             .register_command("LIST", &Service::list)
             .register_command("DELAY", &Service::delay)
             .register_command("PURGE", &Service::purge)
-            .register_command("PEEK", &Service::peek);
+            .register_command("PEEK", &Service::peek)
+            .register_command("INFO", &Service::info);
         return table;
     }();
     return registry;

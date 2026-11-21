@@ -24,7 +24,7 @@ int& destroyed() {
 // unique_ptr<IMessage> вызывает деструктор наследника, а не только базы.
 class CountingMessage final : public IMessage {
 public:
-    CountingMessage() : IMessage("counter", chat::Timestamp{}) {}
+    CountingMessage() = default;
     CountingMessage(const CountingMessage&) = default;
     CountingMessage& operator=(const CountingMessage&) = delete;
     ~CountingMessage() override { ++destroyed(); }
@@ -35,6 +35,12 @@ public:
     [[nodiscard]] MessagePtr clone() const override {
         return std::make_unique<CountingMessage>(*this);
     }
+    // Этап 9: заголовок — поле наследника, а не база (композиция).
+    [[nodiscard]] const chat::MessageHeader& header() const noexcept override { return header_; }
+
+private:
+    [[nodiscard]] chat::MessageHeader& header() noexcept override { return header_; }
+    chat::MessageHeader header_{"counter", {}};
 };
 
 }  // namespace

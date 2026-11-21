@@ -1,0 +1,34 @@
+@startuml states
+' Этап 9: автомат состояний задачи — документ к таблице allowed() из
+' include/taskq/state.hpp. Каждая стрелка здесь — строка таблицы, и
+' наоборот; переходы, которых нет на диаграмме, allowed() запрещает.
+' Сверка — static_assert в state.hpp и тест State.* в tests/test_state.cpp.
+hide empty description
+
+[*] --> Pending : SUBMIT / SUBMITBATCH
+Pending --> Leased : POLL
+Pending --> Cancelled : PURGE
+Leased --> Done : ACK
+Leased --> Failed : FAIL\n(попытки исчерпаны)
+Leased --> Pending : RELEASE\nREAP (воркер исчез\nили аренда истекла)\nFAIL (политика повторов:\nесть попытки — с паузой)
+Done --> [*]
+Failed --> [*]
+Cancelled --> [*]
+
+state Pending {
+  state "готова (в очереди)" as Ready
+  state "отложена (индекс по сроку)" as Parked
+  [*] --> Ready
+  Ready --> Parked : DELAY
+  Parked --> Ready : срок наступил\n(POLL, REAP)
+  Parked --> Parked : DELAY (новый срок)
+}
+
+note right of Pending
+  DELAY, BUMP — только в Pending
+  (Lifecycle::require_state).
+  Отложенная задача — тоже Pending:
+  для автомата это одно состояние,
+  разница — где лежит задача.
+end note
+@enduml

@@ -20,7 +20,7 @@
 | `chat_store.hpp`, `history_between` | — | `lower_bound`/`upper_bound` + `take` / `reverse` + `ranges::transform` |
 | `chat_store.hpp`, `for_each_room` | цикл по `map` | `ranges::for_each` по индексу имён |
 | `chat_store.hpp`, `purge` | (этап 7) | `std::erase_if` |
-| `engine.hpp`, `parse_engine_kind` | — | `ranges::find` с проекцией `name_of` |
+| `engine_kind.hpp` (на этапе 8 — `engine.hpp`), `parse_engine_kind` | — | `ranges::find` с проекцией `name_of` |
 | `commands.cpp`, `is_reaction` | цикл с ранним `return false` | `ranges::all_of` |
 | `commands.cpp`, `/msg`, проверки | цикл | `ranges::for_each` |
 | `commands.cpp`, строки истории и `/rooms` | цикл с `push_back` | `ranges::transform` в `back_inserter` |

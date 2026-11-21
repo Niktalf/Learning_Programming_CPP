@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <string>
 #include <utility>
 
@@ -23,8 +24,14 @@ public:
     // Меняет только хранилище — при смене ника, вместе с ключом реестра.
     void rename(std::string nick) noexcept { nick_ = std::move(nick); }
 
+    // Этап 9: когда пользователь в последний раз что-то делал — по
+    // монотонным часам хранилища (IClock::now()). Отмечает хранилище.
+    [[nodiscard]] std::chrono::steady_clock::time_point last_active() const noexcept { return last_active_; }
+    void touch(std::chrono::steady_clock::time_point at) noexcept { last_active_ = at; }
+
 private:
     std::string nick_;
+    std::chrono::steady_clock::time_point last_active_{};
 };
 
 }  // namespace chat

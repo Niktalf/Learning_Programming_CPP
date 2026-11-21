@@ -15,6 +15,10 @@
 #include <vector>
 
 #include "chat/chat_store.hpp"
+// Этап 9: хранилище видит только объявление фабрики данных. Для комнаты
+// ChatStore она инстанцирована в ядре; для тестовых типов сообщения
+// определение нужно здесь — поэтому тест включает реализации.
+#include "chat/engines.hpp"
 #include "chat/errors.hpp"
 #include "chat/message.hpp"
 
@@ -172,8 +176,7 @@ int& clone_countdown() {
 
 class ThrowingClone final : public chat::IMessage {
 public:
-    explicit ThrowingClone(std::string text)
-        : IMessage("tester", chat::Timestamp{}), text_(std::move(text)) {}
+    explicit ThrowingClone(std::string text) : text_(std::move(text)) {}
     ThrowingClone(const ThrowingClone&) = default;
     ThrowingClone& operator=(const ThrowingClone&) = delete;
 
@@ -186,8 +189,12 @@ public:
         }
         return std::make_unique<ThrowingClone>(*this);
     }
+    // Этап 9: заголовок — поле наследника, а не база (композиция).
+    [[nodiscard]] const chat::MessageHeader& header() const noexcept override { return header_; }
 
 private:
+    [[nodiscard]] chat::MessageHeader& header() noexcept override { return header_; }
+    chat::MessageHeader header_{"tester", {}};
     std::string text_;
 };
 

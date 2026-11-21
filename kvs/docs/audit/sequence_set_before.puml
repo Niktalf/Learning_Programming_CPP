@@ -1,0 +1,33 @@
+@startuml sequence_set_before
+' Этап 9: SET k v на теге v08 — от строки клиента до журнала.
+autonumber
+actor Клиент
+participant "main" as Main
+participant "Server" as Server
+participant "RequestCache" as Cache
+participant "CommandRegistry" as Registry
+participant "set_value()" as Handler
+participant "BasicStore" as Store
+participant "IStorageEngine" as Engine
+participant "std::set ordered_" as Ordered
+participant "AppendOnlyLog" as Log
+database "файл журнала" as File
+
+Клиент -> Main : строка «SET k v»
+Main -> Server : handle(line)
+Server -> Cache : get(line)
+Cache -> Registry : bind(tokenize(line))
+Registry --> Cache : Bound (глагол, аргументы)
+Cache --> Server : shared_ptr<Request>
+Server -> Handler : request->command()(store_)
+Handler -> Store : set("k", Value("v"))
+Store -> Store : footprint, require_room\n(учёт объёма — в самом хранилище)
+Store -> Ordered : insert("k")
+Store -> Engine : put("k", Entry)
+Store -> Store : used_ = …, ++clock_
+Handler --> Server : Response{"OK"}
+Server -> Log : append("SET k v")\n(конкретный класс, открыт сервером по пути)
+Log -> File : << строка, flush
+Server --> Main : Response
+Main --> Клиент : OK
+@enduml

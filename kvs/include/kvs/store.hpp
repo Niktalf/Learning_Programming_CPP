@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -8,18 +9,20 @@
 #include <generator>
 #include <iterator>
 #include <memory>
-#include <set>
 #include <optional>
+#include <set>
 #include <ranges>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "kvs/clock.hpp"
 #include "kvs/concepts.hpp"
-#include "kvs/engine.hpp"
 #include "kvs/errors.hpp"
 #include "kvs/glob.hpp"
+#include "kvs/memory_budget.hpp"
+#include "kvs/storage_engine.hpp"
 #include "kvs/value.hpp"
 #include "kvs/version.hpp"
 
@@ -36,37 +39,48 @@ namespace kvs {
 template <StorableValue V>
 class BasicStore {
     // Типы таблицы — в начале класса: их используют вложенные итераторы,
-    // а в объявлениях членов имя должно быть уже объявлено.
-    struct Entry {
-        V value;
-        RecordVersion version;
-    };
+    // а в объявлениях членов имя должно быть уже объявлено. Этап 9: запись —
+    // открытый тип StoreEntry из storage_engine.hpp: движок создаётся вне
+    // хранилища, и тому, кто его создаёт, нужно назвать тип записи.
+    using Entry = StoreEntry<V>;
 
     // Этап 7: основная таблица — хеш-таблица, выбрана по замерам
     // (docs/benchmarks.md): на 10^6 ключей поиск в 11 раз быстрее std::map.
-    // Этап 8: таблица — за интерфейсом движка (engine.hpp), и какой именно
+    // Этап 8: таблица — за интерфейсом движка (storage_engine.hpp), и какой именно
     // хеш-таблицей она будет — std::unordered_map, собственными цепочками
     // или открытой адресацией, — решается при создании хранилища.
     using Engine = IStorageEngine<Entry>;
     using Slot = typename Engine::Slot;
 
 public:
-    // Движок по умолчанию — из окружения (default_engine_kind): так весь
-    // набор тестов проходит на каждом движке без правок.
-    BasicStore() : BasicStore(default_engine_kind()) {}
-    explicit BasicStore(EngineKind engine) : engine_(make_engine<Entry>(engine)) {}
+    using EnginePtr = std::unique_ptr<Engine>;
 
-    // Этап 3: хранилище с ограничением объёма, как maxmemory у Redis. Объём
-    // считается приближённо — длина ключа плюс размер значения, — и этого
-    // достаточно, чтобы отказать записи до того, как что-либо изменено.
+    // Этап 9: главный конструктор — все зависимости приходят снаружи:
+    // движок, предел объёма, часы. Хранилище не знает, какой движок ему дали,
+    // и не создаёт его само; собирает объекты точка сборки (src/compose.cpp).
+    //
+    // Этап 3: предел объёма — как maxmemory у Redis (MemoryBudget). Часы
+    // хранилище не держит во владении: они живут у точки сборки дольше
+    // хранилища, а по умолчанию это единственный на программу SteadyClock.
+    explicit BasicStore(EnginePtr engine, std::optional<std::size_t> memory_limit = std::nullopt,
+                        const IClock& clock = steady_clock())
+        : engine_(std::move(engine)), budget_(memory_limit), clock_(&clock) {}
+
+    // Удобные конструкторы — для тестов и примеров: движок по имени через
+    // фабрику make_engine, объявленную в storage_engine.hpp. Движок по
+    // умолчанию — из окружения (default_engine_kind): так весь набор тестов
+    // проходит на каждом движке без правок. Это осознанно оставленная
+    // скрытая зависимость (docs/audit.md, «Что оставлено»).
+    BasicStore() : BasicStore(default_engine_kind()) {}
+    explicit BasicStore(EngineKind engine) : BasicStore(make_engine<Entry>(engine)) {}
     explicit BasicStore(std::size_t memory_limit, EngineKind engine = default_engine_kind())
-        : engine_(make_engine<Entry>(engine)), memory_limit_(memory_limit) {}
+        : BasicStore(make_engine<Entry>(engine), memory_limit) {}
 
     // Копия — глубокая: движок клонируется (на копии стоит MSET), диапазонный
     // индекс копируется. Перемещение — передача владения движком.
     BasicStore(const BasicStore& other)
-        : engine_(other.engine_->clone()), ordered_(other.ordered_), used_(other.used_),
-          memory_limit_(other.memory_limit_), clock_(other.clock_) {}
+        : engine_(other.engine_->clone()), ordered_(other.ordered_), budget_(other.budget_),
+          clock_(other.clock_), tick_(other.tick_) {}
     BasicStore& operator=(const BasicStore& other) {
         BasicStore copy(other);
         swap(*this, copy);
@@ -97,11 +111,11 @@ public:
         const std::size_t added = footprint(key, value);
         const Entry* const existing = engine_->find(key);
         const std::size_t removed = existing == nullptr ? 0 : footprint(key, existing->value);
-        const std::size_t next_used = used_ - removed + added;
-        require_room(key, next_used);
+        const std::size_t next_used = budget_.after(removed, added);
+        budget_.require(key, next_used);
 
         const std::uint64_t generation = existing == nullptr ? 1 : existing->version.generation + 1;
-        Entry entry{std::move(value), RecordVersion{generation, clock_ + 1, std::move(author)}};
+        Entry entry{std::move(value), RecordVersion{generation, tick_ + 1, std::move(author)}, clock_->now()};
         std::optional<typename Ordered::iterator> indexed;
         if (existing == nullptr) {
             indexed = ordered_.insert(key).first;   // может бросить — ничего не изменено
@@ -114,8 +128,8 @@ public:
             }
             throw;
         }
-        used_ = next_used;
-        ++clock_;
+        budget_.commit(next_used);
+        ++tick_;
     }
 
     // Этап 6: GETSET — прочитать старое значение и записать новое одной
@@ -147,7 +161,7 @@ public:
         if (found == nullptr) {
             throw KeyNotFoundError(std::string(key_view(key)));
         }
-        require_room(std::string(key_view(key)), used_ + growth);
+        budget_.require(std::string(key_view(key)), budget_.used() + growth);
         Entry& entry = *found;
         const std::size_t before = entry.value.size();
         if constexpr (std::is_void_v<std::invoke_result_t<F, V&>>) {
@@ -200,6 +214,18 @@ public:
     template <KeyLike K>
     [[nodiscard]] bool contains(const K& key) const noexcept {
         return engine_->contains(key_view(key));
+    }
+
+    // Этап 9: сколько прошло с последней записи ключа — по часам хранилища
+    // (IClock), как OBJECT IDLETIME у Redis. Первый потребитель часов; на
+    // этапе 11 по ним же будет считаться TTL.
+    template <KeyLike K>
+    [[nodiscard]] std::optional<std::chrono::steady_clock::duration> idle_time(const K& key) const {
+        const Entry* const entry = engine_->find(key_view(key));
+        if (entry == nullptr) {
+            return std::nullopt;
+        }
+        return clock_->now() - entry->touched;
     }
 
     template <KeyLike K>
@@ -498,9 +524,9 @@ public:
     friend void swap(BasicStore& a, BasicStore& b) noexcept {
         a.engine_.swap(b.engine_);
         a.ordered_.swap(b.ordered_);
-        std::swap(a.used_, b.used_);
-        std::swap(a.memory_limit_, b.memory_limit_);
+        std::swap(a.budget_, b.budget_);
         std::swap(a.clock_, b.clock_);
+        std::swap(a.tick_, b.tick_);
     }
 
     template <KeyLike K>
@@ -510,7 +536,7 @@ public:
         if (entry == nullptr) {
             return false;
         }
-        used_ -= name.size() + entry->value.size();
+        budget_.commit(budget_.after(name.size() + entry->value.size(), 0));
         // Сначала индекс: ключ name может смотреть в строку, которую
         // уничтожит удаление из движка.
         if (const auto it = ordered_.find(name); it != ordered_.end()) {
@@ -520,10 +546,8 @@ public:
         return true;
     }
 
-    [[nodiscard]] std::size_t used_bytes() const noexcept { return used_; }
-    [[nodiscard]] std::optional<std::size_t> memory_limit() const noexcept {
-        return memory_limit_;
-    }
+    [[nodiscard]] std::size_t used_bytes() const noexcept { return budget_.used(); }
+    [[nodiscard]] std::optional<std::size_t> memory_limit() const noexcept { return budget_.limit(); }
 
     [[nodiscard]] std::size_t size() const noexcept { return engine_->size(); }
     [[nodiscard]] bool empty() const noexcept { return size() == 0; }
@@ -551,14 +575,9 @@ private:
     // Учёт после изменения на месте: объём по фактическому размеру и новая
     // версия записи. Только арифметика и короткая строка автора.
     void account(Entry& entry, std::size_t before) {
-        used_ = used_ - before + entry.value.size();
-        entry.version = RecordVersion{entry.version.generation + 1, ++clock_, "local"};
-    }
-
-    void require_room(const std::string& key, std::size_t needed) const {
-        if (memory_limit_ && needed > *memory_limit_) {
-            throw OutOfMemoryError(key, needed, *memory_limit_);
-        }
+        budget_.commit(budget_.after(before, entry.value.size()));
+        entry.version = RecordVersion{entry.version.generation + 1, ++tick_, "local"};
+        entry.touched = clock_->now();
     }
 
     // Этап 8: диапазонный индекс — те же ключи в порядке строк. Ключи в нём
@@ -566,11 +585,11 @@ private:
     // этапа 3 и считает данные клиента, а не служебные структуры.
     using Ordered = std::set<std::string, std::less<>>;
 
-    std::unique_ptr<Engine> engine_;
+    EnginePtr engine_;
     Ordered ordered_;
-    std::size_t used_ = 0;
-    std::optional<std::size_t> memory_limit_;
-    std::uint64_t clock_ = 0;   // логические часы: +1 на каждую запись
+    MemoryBudget budget_;
+    const IClock* clock_;     // монотонные часы — не во владении (этап 9)
+    std::uint64_t tick_ = 0;  // логические часы версий: +1 на каждую запись
 };
 
 using Store = BasicStore<Value>;

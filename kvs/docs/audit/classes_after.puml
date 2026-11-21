@@ -1,0 +1,76 @@
+@startuml classes_after
+' Этап 9: классы KVS после рефакторинга. Интерфейсы лежат у потребителя;
+' конкретные классы создаёт только точка сборки make_server.
+skinparam classAttributeIconSize 0
+hide empty members
+
+package "консольный клиент" {
+  class main <<program>>
+}
+
+package "точка сборки (compose.hpp / compose.cpp)" #EEFFEE {
+  class Config
+  class "make_server()" as MakeServer <<function>>
+}
+
+package "ядро" {
+  class Server {
+    +Server(Store, unique_ptr<ILogSink>, ILogSource*)
+    +handle(line) : Response
+  }
+  interface ILogSink <<port, journal.hpp>>
+  interface ILogSource <<port, journal.hpp>>
+  class RequestCache
+  class "BasicStore<V>" as Store {
+    +BasicStore(unique_ptr<IStorageEngine>, limit, const IClock&)
+  }
+  class MemoryBudget
+  interface "IStorageEngine<Entry>" as IEngine <<port, storage_engine.hpp>>
+  interface IClock <<port, clock.hpp>>
+  class SteadyClock
+  class Reply <<Pure Fabrication>>
+  class "CommandRegistry<Store>" as Registry
+  class Value
+  interface IValue
+  class StringValue
+  class IntValue
+  class ListValue
+}
+
+package "адаптеры" {
+  package "engines.hpp" {
+    class "StdEngine<Entry>" as StdEngine
+    class "TableEngine<Entry, Table>" as TableEngine
+    class "make_engine<Entry>()" as MakeEngine
+  }
+  package "log.hpp" {
+    class AppendOnlyLog
+    class FileHistory
+  }
+}
+
+main --> MakeServer : Config из аргументов
+MakeServer ..> MakeEngine : движок по Config.engine
+MakeServer ..> AppendOnlyLog : по Config.log
+MakeServer ..> FileHistory
+MakeServer --> Server : собирает
+Server *-- Store
+Server *-- RequestCache
+Server o-- "0..1" ILogSink
+Server ..> ILogSource : только в конструкторе
+Server ..> Reply : ответ на ошибку
+Registry ..> Reply
+Store *-- IEngine
+Store *-- MemoryBudget
+Store o-- IClock
+IClock <|.. SteadyClock
+ILogSink <|.. AppendOnlyLog
+ILogSource <|.. FileHistory
+IEngine <|.. StdEngine
+IEngine <|.. TableEngine
+Store *-- Value
+Value *-- IValue
+IValue <|.. StringValue
+IValue <|.. IntValue
+IValue <|.. ListValue
+@enduml

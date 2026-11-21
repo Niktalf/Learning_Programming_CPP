@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "chat/ascii.hpp"
 #include "chat/convert.hpp"
 #include "chat/errors.hpp"
 #include "chat/function_traits.hpp"
@@ -153,14 +154,6 @@ template <class... Params>
     return usage;
 }
 
-[[nodiscard]] inline std::string lower(std::string_view text) {
-    std::string result(text.size(), '\0');
-    std::ranges::transform(text, result.begin(), [](char c) {
-        return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
-    });
-    return result;
-}
-
 }  // namespace detail
 
 // Концепция обработчика команды. Что требуется, по порядку:
@@ -218,7 +211,7 @@ public:
         using Params = typename detail::parts_of<F>::params;
         using Shape = typename detail::parts_of<F>::shape;
 
-        std::string verb = detail::lower(name);
+        std::string verb = lower_ascii(name);
         std::string usage = "usage: " + detail::usage_for(verb, std::type_identity<Params>{});
         Binder binder = [handler = std::move(handler), usage = std::move(usage)](
                             std::string_view line) -> std::function<Response(Context&)> {
@@ -265,7 +258,7 @@ public:
         if (head.empty()) {
             throw ParseError("empty command", std::string(line));
         }
-        const auto it = table_.find(detail::lower(head.front()));
+        const auto it = table_.find(lower_ascii(head.front()));
         if (it == table_.end()) {
             throw ParseError("unknown command: " + std::string(head.front()), std::string(line));
         }

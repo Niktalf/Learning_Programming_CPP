@@ -1,7 +1,7 @@
 # Хеш-функции и собственные хеш-таблицы (этап 8)
 
 Код: `include/taskq/hash.hpp`, `include/taskq/chained_table.hpp`,
-`include/taskq/open_table.hpp`, `include/taskq/engine.hpp`. Цифры получены
+`include/taskq/open_table.hpp`, `include/taskq/task_index.hpp`, `include/taskq/engines.hpp`. Цифры получены
 программами `taskq_id_histogram` и `taskq_bench_open` (Release, GCC 15.2).
 
 ## Движки индекса по номеру

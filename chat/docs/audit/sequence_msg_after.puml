@@ -1,0 +1,35 @@
+@startuml sequence_msg_after
+' Этап 9: /msg #a,#b hi после рефакторинга.
+autonumber
+actor Клиент
+participant "main" as Main
+participant "Server" as Server
+participant "BasicChatStore" as Store
+participant "CommandRegistry" as Registry
+participant "message()" as Handler
+participant "MessageIdSource" as Ids
+participant "IClock" as Clock
+participant "история #a" as A
+participant "история #b" as B
+participant "ILogSink" as Sink
+
+== запуск ==
+Main -> Main : make_server(Config)\n(данные, журнал, часы — здесь)
+== команда ==
+Клиент -> Main : «/msg #a,#b hi»
+Main -> Server : handle(session, line)
+Server -> Store : touch(nick)
+Store -> Clock : now()   (steady — простой)
+Server -> Registry : bind(line)
+Server -> Handler : (Context{store, session, journal})
+Handler -> Store : next_message_id(author)
+Store -> Ids : next(author)
+Ids -> Clock : wall()   (system — отметка)
+Handler -> Store : post_many([#a, #b], message)
+Store -> A : push_back(копия)
+Store -> B : push_back(оригинал)
+Handler -> Sink : append("#a,#b\\talice\\thi")
+Handler --> Server : Reply::ok()
+Server --> Main : Response
+Main --> Клиент : OK
+@enduml

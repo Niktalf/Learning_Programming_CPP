@@ -32,6 +32,8 @@ FetchContent_MakeAvailable(googletest)
 
 add_library(taskq_core
     src/payload.cpp
+    src/engines.cpp
+    src/compose.cpp
     src/task.cpp
     src/log.cpp
     src/task_key.cpp
@@ -67,7 +69,6 @@ add_executable(taskq_tests
     tests/test_fuzz.cpp
     tests/test_payload.cpp
     tests/test_workers.cpp
-    tests/test_log.cpp
     tests/test_cycle.cpp
     tests/test_concepts.cpp
     tests/test_list.cpp
@@ -82,9 +83,21 @@ add_executable(taskq_tests
     tests/test_hash_tables.cpp
     tests/test_engines.cpp
     tests/test_deadlines.cpp
-    tests/test_list_page.cpp)
+    tests/test_list_page.cpp
+    tests/test_retry.cpp)
 target_include_directories(taskq_tests PRIVATE tests tools)
 target_link_libraries(taskq_tests PRIVATE taskq_core taskq_warnings GTest::gtest_main)
+
+# Этап 9: тесты, которым нужна файловая система, — отдельно. Модульные
+# тесты (taskq_tests) не пишут файлов и не смотрят на настоящие часы: журнал
+# и часы — порты с подставными реализациями. Здесь — файловый журнал и
+# точка сборки с настоящими файлами; метка integration отделяет их в ctest
+# (ctest -LE integration — только модульные).
+add_executable(taskq_integration_tests
+    tests/test_log.cpp
+    tests/test_compose.cpp)
+target_include_directories(taskq_integration_tests PRIVATE tests tools)
+target_link_libraries(taskq_integration_tests PRIVATE taskq_core taskq_warnings GTest::gtest_main)
 
 # Звёздочка этапа 1: порядок конструкторов при добавлении в std::vector.
 add_executable(taskq_push_order tools/push_order.cpp)
@@ -138,10 +151,11 @@ add_test(NAME taskq_invalidation_detected
 include(GoogleTest)
 gtest_discover_tests(taskq_tests)
 gtest_discover_tests(taskq_alloc_tests)
+gtest_discover_tests(taskq_integration_tests PROPERTIES LABELS integration)
 
 # Этап 8: тот же набор тестов на каждом движке индекса по номеру, без единой
 # правки в тестах. Движок по умолчанию берётся из переменной окружения
-# TASKQ_ENGINE (engine.hpp), и ctest запускает набор ещё трижды — на
+# TASKQ_ENGINE (engine_kind.hpp), и ctest запускает набор ещё трижды — на
 # собственной хеш-таблице, на ней же с заведомо плохой хеш-функцией и на
 # открытой адресации. Имена тестов получают приставку движка:
 # hash/Service.PollRespectsPriorityThenOrder.

@@ -19,7 +19,7 @@
 #include <vector>
 
 #include "bench_util.hpp"
-#include "kvs/engine.hpp"
+#include "kvs/engines.hpp"
 
 namespace {
 

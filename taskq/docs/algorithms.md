@@ -21,7 +21,7 @@
 | `task_store.hpp`, `pending_ids` | — | два `ranges::transform` в один вектор |
 | `task_store.hpp`, `size`, `purge` | — | `ranges::distance` по представлению `parked_in` |
 | `task_store.hpp`, `for_each_queue` | цикл | `ranges::for_each` |
-| `engine.hpp`, `parse_engine_kind` | — | `ranges::find` с проекцией `name_of` |
+| `engine_kind.hpp` (на этапе 8 — `engine.hpp`), `parse_engine_kind` | — | `ranges::find` с проекцией `name_of` |
 | `hash.hpp`, FNV-1a | — | `ranges::fold_left` по массиву сдвигов, `constexpr` |
 | `handler.cpp`, цепочка контекста ошибки | цикл с `+=` | `ranges::fold_left` |
 | `validate.cpp`, управляющие символы | цикл с ранним выходом | `ranges::any_of` |

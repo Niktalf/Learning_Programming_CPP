@@ -4,14 +4,13 @@
 #include <gtest/gtest.h>
 
 #include <exception>
-#include <fstream>
 #include <string>
 #include <vector>
 
 #include "taskq/errors.hpp"
 #include "taskq/service.hpp"
 #include "taskq/handler.hpp"
-#include "temp_dir.hpp"
+#include "memory_log.hpp"
 
 using taskq::handle;
 using taskq::Service;
@@ -30,16 +29,6 @@ Service prepared() {
         static_cast<void>(handle(service, line));
     }
     return service;
-}
-
-std::vector<std::string> read_lines(const std::filesystem::path& path) {
-    std::ifstream in(path);
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(in, line)) {
-        lines.push_back(line);
-    }
-    return lines;
 }
 
 }  // namespace
@@ -101,24 +90,16 @@ TEST(Workers, ReturningWorkerIsANewObject) {
 }
 
 TEST(Workers, JournalRecordsTransitions) {
-    const taskq::testing::TempDir dir;
-    const auto path = dir.file("transitions.log");
-    {
-        Service service(path);
-        for (const char* const line : {"CREATE build", "SUBMIT build a", "WORKER w1",
-                                       "POLL build w1", "GONE w1", "REAP", "POLL build",
-                                       "ACK 1", "ACK 1"}) {
-            static_cast<void>(handle(service, line));
-        }
+    // Этап 9: журнал — порт, и тест подставляет журнал в памяти. Файловая
+    // версия — в test_compose.cpp (taskq_integration_tests).
+    const taskq::testing::MemoryLog journal;
+    Service service(taskq::TaskStore(), taskq::system_clocks(), journal.sink());
+    for (const char* const line : {"CREATE build", "SUBMIT build a", "WORKER w1",
+                                   "POLL build w1", "GONE w1", "REAP", "POLL build",
+                                   "ACK 1", "ACK 1"}) {
+        static_cast<void>(handle(service, line));
     }
-    EXPECT_EQ(read_lines(path), (std::vector<std::string>{"1\t-\tpending", "1\tpending\tleased",
-                                                          "1\tleased\tpending", "1\tpending\tleased",
-                                                          "1\tleased\tdone"}));
-}
-
-TEST(Workers, FailedConstructionLeaksNothing) {
-    const taskq::testing::TempDir dir;
-    const int before = taskq::testing::open_descriptors();
-    EXPECT_THROW(Service(dir.file("missing") / "transitions.log"), taskq::TaskQError);
-    EXPECT_EQ(taskq::testing::open_descriptors(), before);
+    EXPECT_EQ(journal.records(), (std::vector<std::string>{"1\t-\tpending", "1\tpending\tleased",
+                                                           "1\tleased\tpending", "1\tpending\tleased",
+                                                           "1\tleased\tdone"}));
 }

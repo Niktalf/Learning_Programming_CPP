@@ -8,6 +8,7 @@
 
 #include "taskq/errors.hpp"
 #include "taskq/service.hpp"
+#include "manual_clock.hpp"
 
 // Команды сервиса через реестр этапа 6. До него эти тесты назывались
 // test_executor и шли через parse и execute; поведение команд то же. Тесты
@@ -15,6 +16,7 @@
 
 using taskq::Response;
 using taskq::Service;
+using taskq::testing::ManualClock;
 using taskq::State;
 
 namespace {
@@ -240,15 +242,6 @@ std::string usage_for(const std::string& text) {
     return {};
 }
 
-// Управляемые часы: тест двигает время сам, без sleep.
-struct ManualClock {
-    std::shared_ptr<taskq::Timestamp> now =
-        std::make_shared<taskq::Timestamp>(std::chrono::system_clock::now());
-
-    void advance(std::chrono::seconds by) const { *now += by; }
-    taskq::Timestamp operator()() const { return *now; }
-};
-
 }  // namespace
 
 TEST(Commands, SubmitWithQuotedQueueAndPriority) {
@@ -362,9 +355,10 @@ TEST(Commands, PeekShowsWhatPollWouldLease) {
 }
 
 TEST(Commands, DelayedTaskIsSkippedUntilItsTime) {
-    Service service = with_build_queue();
-    const ManualClock clock;
-    service.set_clock(clock);
+    // Этап 9: часы — порт IClock; подставные передаются в конструктор.
+    ManualClock clock;
+    Service service(taskq::TaskStore(), clock);
+    run(service, "CREATE build");
     run(service, "SUBMIT build prio=9 urgent");
     run(service, "SUBMIT build routine");
 
@@ -382,9 +376,10 @@ TEST(Commands, DelayedTaskIsSkippedUntilItsTime) {
 }
 
 TEST(Commands, DelayUnitsAndRules) {
-    Service service = with_build_queue();
-    const ManualClock clock;
-    service.set_clock(clock);
+    // Этап 9: часы — порт IClock; подставные передаются в конструктор.
+    ManualClock clock;
+    Service service(taskq::TaskStore(), clock);
+    run(service, "CREATE build");
     run(service, "SUBMIT build x");
     EXPECT_EQ(run(service, "DELAY 1 15m").text, std::string("OK, delayed for 900s"));
     EXPECT_EQ(run(service, "DELAY 1 2h").text, std::string("OK, delayed for 7200s"));

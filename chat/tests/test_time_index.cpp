@@ -10,32 +10,30 @@
 #include "chat/chat_store.hpp"
 #include "chat/commands.hpp"
 #include "chat/message.hpp"
+#include "manual_clock.hpp"
 
 using chat::ChatStore;
 using chat::Session;
 
 namespace {
 
-// Часы, которые идут только когда им скажут.
-struct ManualClock {
-    std::uint64_t now = 1000;
-    std::uint64_t operator()() const { return now; }
-};
-
 std::string run(ChatStore& store, Session& session, const std::string& text) {
     return chat::execute(store, session, text).text;
 }
 
-// Хранилище с участником alice в #general и управляемыми часами.
+// Хранилище с участником alice в #general и управляемыми часами. Этап 9:
+// часы — ManualClock (manual_clock.hpp), переданные хранилищу в
+// конструкторе; до этапа 9 — лямбда через set_clock.
 struct Fixture {
-    explicit Fixture(std::size_t capacity = ChatStore::default_history_capacity) : store(capacity) {
-        store.set_clock([this] { return clock.now; });
+    explicit Fixture(std::size_t capacity = ChatStore::default_history_capacity)
+        : store(chat::make_chat_store<ChatStore::Room>(chat::default_engine_kind()), capacity, clock) {
+        clock.set_wall_ms(1000);
         store.register_user("alice");
         run(store, alice, "/join #general");   // уведомление о входе — в момент 1000
     }
 
     void say_at(std::uint64_t moment, const std::string& text) {
-        clock.now = moment;
+        clock.set_wall_ms(static_cast<long long>(moment));
         run(store, alice, "/msg #general " + text);
     }
 
@@ -53,7 +51,7 @@ struct Fixture {
         return result;
     }
 
-    ManualClock clock;
+    chat::testing::ManualClock clock;
     ChatStore store;
     Session alice{"alice"};
 };
@@ -109,7 +107,7 @@ TEST(TimeIndex, RecordedByEveryWayOfPosting) {
     Session bob{"bob"};
     run(chat.store, bob, "/join #general");          // 1
     run(chat.store, chat.alice, "/join #other");     // в #other: 0
-    chat.clock.now = 7000;
+    chat.clock.set_wall_ms(7000);
     run(chat.store, chat.alice, "/msg #general,#other hi");   // #general 2, #other 1
     run(chat.store, chat.alice, "/kick #general bob");        // 3
     EXPECT_EQ(chat.indexes(7000, 7000, 10, ChatStore::Window::Earliest), (std::vector<std::size_t>{2, 3}));

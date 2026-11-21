@@ -1,5 +1,6 @@
 #include <charconv>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -10,7 +11,7 @@
 #include <string_view>
 #include <utility>
 
-#include "taskq/service.hpp"
+#include "taskq/compose.hpp"
 #include "taskq/handler.hpp"
 
 namespace {
@@ -31,7 +32,7 @@ void print_help() {
   LIST <queue> [prio>=N] [type=K] [limit=N] [after=P.S]
                                    ready tasks of a queue, a page at a time
   ACK <id>                         mark a leased task done
-  FAIL <id>                        mark a leased task failed
+  FAIL <id>                        mark a leased task failed, or retry it (--retries)
   RELEASE <id>                     return a leased task to its queue
   STATUS <id>                      state of the task
   TYPE <id>                        kind of the payload
@@ -43,6 +44,7 @@ void print_help() {
   DELAY <id> <delay>               hold a pending task back: 90, 90s, 15m, 2h
   PURGE <queue>                    cancel all pending tasks of a queue
   PEEK <queue>                     the task POLL would lease, without leasing
+  INFO <id>                        when a waiting or leased task was submitted
   DEMO                             capture by reference vs by value
   HELP / QUIT
 )");
@@ -64,20 +66,31 @@ void run_capture_demo(const taskq::TaskStore& store) {
     std::println("captured by value:     {}   (the lambda changed its own copy)", by_value);
 }
 
-struct Arguments {
-    std::optional<std::filesystem::path> log;
-    taskq::EngineKind engine = taskq::default_engine_kind();
-    std::chrono::seconds lease_timeout = taskq::Service::default_lease_timeout;
-};
+// Положительное целое из хвоста аргумента или пусто.
+[[nodiscard]] std::optional<long long> positive(std::string_view digits) noexcept {
+    long long value = 0;
+    const auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), value);
+    if (error != std::errc{} || end != digits.data() + digits.size() || value <= 0) {
+        return std::nullopt;
+    }
+    return value;
+}
 
-// Разбор аргументов: --log=PATH, --engine=NAME, --lease=SECONDS в любом
-// порядке. Неизвестный ключ, движок или срок — отказ запуска, а не молчаливое
-// игнорирование.
-[[nodiscard]] std::optional<Arguments> parse_arguments(int argc, char* argv[]) {
+// Разбор аргументов в Config точки сборки: --log=PATH, --engine=NAME,
+// --lease=SECONDS, --retries=N, --backoff=SECONDS в любом порядке.
+// Неизвестный ключ или значение — отказ запуска, а не молчаливое
+// игнорирование. Этап 9: движок по умолчанию — из TASKQ_ENGINE, как и у
+// тестов; окружение читает консольный клиент, а не ядро.
+[[nodiscard]] std::optional<taskq::Config> parse_arguments(int argc, char* argv[]) {
     constexpr std::string_view log_prefix = "--log=";
     constexpr std::string_view engine_prefix = "--engine=";
     constexpr std::string_view lease_prefix = "--lease=";
-    Arguments arguments;
+    constexpr std::string_view retries_prefix = "--retries=";
+    constexpr std::string_view backoff_prefix = "--backoff=";
+    taskq::Config arguments;
+    arguments.engine = taskq::default_engine_kind();
+    long long retries = 1;
+    long long backoff = 0;
     for (int i = 1; i < argc; ++i) {
         const std::string_view argument = argv[i];
         if (argument.starts_with(log_prefix) && argument.size() > log_prefix.size()) {
@@ -89,17 +102,28 @@ struct Arguments {
             }
             arguments.engine = *engine;
         } else if (argument.starts_with(lease_prefix)) {
-            const std::string_view digits = argument.substr(lease_prefix.size());
-            long long seconds = 0;
-            const auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), seconds);
-            if (error != std::errc{} || end != digits.data() + digits.size() || seconds <= 0) {
+            const auto seconds = positive(argument.substr(lease_prefix.size()));
+            if (!seconds) {
                 return std::nullopt;
             }
-            arguments.lease_timeout = std::chrono::seconds(seconds);
+            arguments.lease_timeout = std::chrono::seconds(*seconds);
+        } else if (argument.starts_with(retries_prefix)) {
+            const auto count = positive(argument.substr(retries_prefix.size()));
+            if (!count || *count > 100) {
+                return std::nullopt;
+            }
+            retries = *count;
+        } else if (argument.starts_with(backoff_prefix)) {
+            const auto seconds = positive(argument.substr(backoff_prefix.size()));
+            if (!seconds) {
+                return std::nullopt;
+            }
+            backoff = *seconds;
         } else {
             return std::nullopt;
         }
     }
+    arguments.retry = taskq::RetryPolicy(static_cast<std::uint32_t>(retries), std::chrono::seconds(backoff));
     return arguments;
 }
 
@@ -108,7 +132,8 @@ struct Arguments {
 int main(int argc, char* argv[]) {
     const auto arguments = parse_arguments(argc, argv);
     if (!arguments) {
-        std::println(stderr, "usage: taskq_cli [--log=PATH] [--engine=std|hash|bad-hash|open] [--lease=SECONDS]");
+        std::println(stderr, "usage: taskq_cli [--log=PATH] [--engine=std|hash|bad-hash|open] [--lease=SECONDS] "
+                             "[--retries=N] [--backoff=SECONDS]");
         return 2;
     }
 
@@ -117,15 +142,14 @@ int main(int argc, char* argv[]) {
     // кучи, — только затем, чтобы конструктор оказался внутри try.
     std::optional<taskq::Service> service;
     try {
-        service.emplace(arguments->engine, arguments->log);
+        service.emplace(taskq::make_service(*arguments));
     } catch (const std::exception& e) {
         std::println(stderr, "cannot start: {}", e.what());
         return 1;
     }
 
-    service->set_lease_timeout(arguments->lease_timeout);
-    std::println("TASKQ, stage 8, engine {}, lease {}s", service->store().engine_name(),
-                 arguments->lease_timeout.count());
+    std::println("TASKQ, stage 9, engine {}, lease {}s, attempts {}", service->store().engine_name(),
+                 arguments->lease_timeout.count(), arguments->retry.attempts());
     print_help();
 
     std::string raw;   // объявлена до цикла: в неё читает std::getline

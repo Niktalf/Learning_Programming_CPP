@@ -20,7 +20,8 @@
 #include <vector>
 
 #include "taskq/concepts.hpp"
-#include "taskq/engine.hpp"
+#include "taskq/clock.hpp"
+#include "taskq/task_index.hpp"
 #include "taskq/errors.hpp"
 #include "taskq/task.hpp"
 #include "taskq/task_key.hpp"
@@ -49,7 +50,7 @@ namespace taskq {
 //
 // Индекс по номеру задачи: STATUS, ACK, BUMP, DELAY ищут задачу по номеру.
 // Этап 7 — std::unordered_map, в 75 раз быстрее дерева на 10^6 задач. Этап 8
-// — за интерфейсом движка (engine.hpp): std::unordered_map или собственная
+// — за интерфейсом движка (task_index.hpp): std::unordered_map или собственная
 // хеш-таблица, выбор при запуске.
 //
 // Этап 8: отложенные задачи (DELAY) больше не лежат в очереди. Они в
@@ -71,7 +72,8 @@ class BasicTaskStore {
 public:
     // Ключ индекса по сроку: момент и номер. Номер делает ключ уникальным —
     // у двух задач, отложенных до одного момента, разные номера.
-    using Deadline = std::pair<Timestamp, TaskId>;
+    // Этап 9: момент — монотонный (Instant, clock.hpp): срок — интервал.
+    using Deadline = std::pair<Instant, TaskId>;
 
 private:
     using ParkedTasks = std::map<Deadline, Parked>;
@@ -88,13 +90,25 @@ private:
     };
 
 public:
-    using Clock = std::chrono::system_clock;
+    // Этап 9: главный конструктор — зависимости снаружи: индекс по номеру и
+    // часы. Хранилище не создаёт свой индекс само; собирает объекты точка
+    // сборки (src/compose.cpp). Часы не во владении: они живут у точки
+    // сборки дольше хранилища. Тип записи индекса открыт как IndexEntry,
+    // чтобы точка сборки могла создать индекс
+    // (make_task_index<TaskStore::IndexEntry>).
+    using IndexEntry = Location;
+    using IndexPtr = std::unique_ptr<ITaskIndex<IndexEntry>>;
 
-    // Этап 8: индекс по номеру — за интерфейсом движка. Движок по умолчанию
-    // — из окружения (default_engine_kind): так весь набор тестов
-    // прогоняется на каждом движке без правок.
+    explicit BasicTaskStore(IndexPtr index, const IClock& clock = system_clocks())
+        : index_(std::move(index)), clock_(&clock) {}
+
+    // Удобные конструкторы — для тестов и примеров: индекс по имени движка
+    // через фабрику make_task_index, объявленную в task_index.hpp. Движок
+    // по умолчанию — из окружения (default_engine_kind): так весь набор
+    // тестов прогоняется на каждом движке без правок. Это осознанно
+    // оставленная скрытая зависимость (docs/audit.md, «Что оставлено»).
     BasicTaskStore() : BasicTaskStore(default_engine_kind()) {}
-    explicit BasicTaskStore(EngineKind engine) : index_(make_task_index<Location>(engine)) {}
+    explicit BasicTaskStore(EngineKind engine) : BasicTaskStore(make_task_index<Location>(engine)) {}
 
     [[nodiscard]] std::string_view engine_name() const noexcept { return index_->name(); }
 
@@ -264,7 +278,8 @@ public:
     // Этап 6: «следующая» — среди готовых к выдаче. Этап 8: готовые — это
     // очередь плюс те отложенные задачи этой очереди, чей срок уже наступил,
     // но которые ещё не вернулись в очередь (promote_due).
-    [[nodiscard]] std::optional<T> peek(std::string_view queue, Timestamp now = Clock::now()) const {
+    [[nodiscard]] std::optional<T> peek(std::string_view queue) const { return peek(queue, clock_->now()); }
+    [[nodiscard]] std::optional<T> peek(std::string_view queue, Instant now) const {
         const auto next = next_ready(queue, now);
         if (!next) {
             return std::nullopt;
@@ -274,7 +289,10 @@ public:
 
     // Номер следующей задачи без копирования самой задачи. Нужен POLL, чтобы
     // подготовить место под задачу до того, как забрать её из очереди.
-    [[nodiscard]] std::optional<TaskId> front_id(std::string_view queue, Timestamp now = Clock::now()) const {
+    [[nodiscard]] std::optional<TaskId> front_id(std::string_view queue) const {
+        return front_id(queue, clock_->now());
+    }
+    [[nodiscard]] std::optional<TaskId> front_id(std::string_view queue, Instant now) const {
         const auto next = next_ready(queue, now);
         if (!next) {
             return std::nullopt;
@@ -287,7 +305,8 @@ public:
     // индекса — тоже. Поэтому take не возвращает отложенные задачи в
     // очередь сам (вставка в дерево выделяет память), а берёт готовую
     // отложенную прямо из индекса по сроку.
-    [[nodiscard]] std::optional<T> take(std::string_view queue, Timestamp now = Clock::now()) {
+    [[nodiscard]] std::optional<T> take(std::string_view queue) { return take(queue, clock_->now()); }
+    [[nodiscard]] std::optional<T> take(std::string_view queue, Instant now) {
         const auto next = next_ready(queue, now);
         if (!next) {
             return std::nullopt;
@@ -314,7 +333,7 @@ public:
     // очереди и правка записи индекса по номеру — не бросают. Повторный
     // DELAY переносит срок: узел извлекается и вставляется с новым ключом
     // (extract и insert узла памяти не выделяют).
-    bool delay(TaskId id, Timestamp until) {
+    bool delay(TaskId id, Instant until) {
         Location* const location = index_->find(id);
         if (location == nullptr) {
             return false;
@@ -334,7 +353,7 @@ public:
     }
 
     // Когда отложенная задача станет готова, или пусто, если не отложена.
-    [[nodiscard]] std::optional<Timestamp> not_before(TaskId id) const {
+    [[nodiscard]] std::optional<Instant> not_before(TaskId id) const {
         const Location* const location = index_->find(id);
         if (location == nullptr) {
             return std::nullopt;
@@ -352,7 +371,7 @@ public:
     // задач, а начало дерева: upper_bound находит границу за O(log n), и
     // дальше — ровно k нужных. Этот запрос будет делать фоновый сборщик
     // этапа 11.
-    [[nodiscard]] std::vector<TaskId> due(Timestamp now) const {
+    [[nodiscard]] std::vector<TaskId> due(Instant now) const {
         return std::ranges::to<std::vector<TaskId>>(
             std::ranges::subrange(parked_.begin(), parked_.upper_bound(latest_at(now))) |
             std::views::transform([](const auto& entry) { return entry.first.second; }));
@@ -366,7 +385,7 @@ public:
     // же: готовую отложенную задачу take и peek видят и там.
     //
     // Цикл, а не алгоритм: каждый шаг меняет само дерево, по которому идёт.
-    std::size_t promote_due(Timestamp now) {
+    std::size_t promote_due(Instant now) {
         std::size_t promoted = 0;
         while (!parked_.empty() && parked_.begin()->first.first <= now) {
             const auto held = parked_.begin();
@@ -577,7 +596,7 @@ public:
 
 private:
     // Последний ключ индекса по сроку с моментом не позже now.
-    [[nodiscard]] static Deadline latest_at(Timestamp now) noexcept {
+    [[nodiscard]] static Deadline latest_at(Instant now) noexcept {
         return Deadline{now, std::numeric_limits<TaskId>::max()};
     }
 
@@ -598,7 +617,7 @@ private:
     // const BasicTaskStore, и итераторы в результате — соответствующие.
     // До C++23 пришлось бы писать две копии или const_cast.
     template <class Self>
-    [[nodiscard]] auto next_ready(this Self& self, std::string_view queue, Timestamp now) {
+    [[nodiscard]] auto next_ready(this Self& self, std::string_view queue, Instant now) {
         auto& tasks = self.existing(queue);
         using Ready = decltype(tasks.begin());
         using Held = decltype(self.parked_.begin());
@@ -678,6 +697,7 @@ private:
     // std::less<> включает разнородный поиск: методы принимают string_view.
     std::map<std::string, Tasks, std::less<>> queues_;
     std::unique_ptr<ITaskIndex<Location>> index_;   // по номеру — за интерфейсом движка
+    const IClock* clock_;                           // этап 9: часы — не во владении
     ParkedTasks parked_;                            // этап 8: индекс по сроку, отложенные задачи
     std::uint64_t seq_ = 0;   // последний выданный номер постановки
 };
