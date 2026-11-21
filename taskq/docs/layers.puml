@@ -1,0 +1,57 @@
+@startuml layers
+' Этап 10: слои TASKQ и направление зависимостей.
+skinparam componentStyle rectangle
+
+package "app" {
+  [taskq_cli]
+  [taskq_tail]
+}
+package "taskq_infrastructure" {
+  [engines]
+  [AppendOnlyLog] as log
+  [event_wire]
+  [KafkaEventPublisher] as kafka
+  [make_service] as compose
+}
+package "taskq_application" {
+  [Service]
+  [handle] as handler
+  [Registry] as commands
+  [ILogSink] as journal
+  [SeenEvents / SequenceTracker / Tally] as seen
+}
+package "taskq_domain" {
+  [TaskStore] as store
+  [ITaskIndex] as index
+  [Lifecycle / allowed()] as automaton
+  [IEventPublisher] as publisher
+  [DomainEvent] as events
+  [Task / Payload] as model
+  [IClock] as clock
+}
+[lab::kafka] as lab
+
+taskq_cli --> compose
+taskq_cli --> handler
+taskq_tail --> event_wire
+taskq_tail --> seen
+taskq_tail --> lab
+compose --> Service
+compose --> engines
+compose --> kafka
+engines ..|> index
+log ..|> journal
+kafka ..|> publisher
+kafka --> event_wire
+kafka --> lab
+handler --> Service
+Service --> commands
+Service --> store
+Service --> automaton
+Service --> publisher
+Service --> journal
+Service --> events
+store --> index
+store --> model
+store --> clock
+@enduml

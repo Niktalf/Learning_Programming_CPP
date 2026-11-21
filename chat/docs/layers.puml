@@ -1,0 +1,52 @@
+@startuml layers
+' Этап 10: слои CHAT и направление зависимостей.
+skinparam componentStyle rectangle
+
+package "app" {
+  [chat_cli]
+  [chat_tail]
+}
+package "chat_infrastructure" {
+  [engines]
+  [AppendOnlyLog] as log
+  [event_wire]
+  [KafkaEventPublisher] as kafka
+  [make_server] as compose
+}
+package "chat_application" {
+  [Server]
+  [Registry / commands] as commands
+  [ILogSink] as journal
+  [SeenEvents / SequenceTracker] as seen
+}
+package "chat_domain" {
+  [BasicChatStore] as store
+  [IChatStore] as data
+  [IEventPublisher] as publisher
+  [DomainEvent] as events
+  [IMessage / User] as model
+  [IClock] as clock
+}
+[lab::kafka] as lab
+
+chat_cli --> compose
+chat_tail --> event_wire
+chat_tail --> seen
+chat_tail --> lab
+compose --> Server
+compose --> engines
+compose --> kafka
+engines ..|> data
+log ..|> journal
+kafka ..|> publisher
+kafka --> event_wire
+kafka --> lab
+Server --> store
+Server --> publisher
+Server --> journal
+commands --> store
+store --> data
+store --> events
+store --> model
+store --> clock
+@enduml

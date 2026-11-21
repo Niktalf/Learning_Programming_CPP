@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# lab-stand — управление стендом практикума одной командой.
+#
+#   lab-stand up       поднять Kafka и создать топик своего варианта
+#   lab-stand check    проверить стенд: записать сообщение и прочитать обратно
+#   lab-stand events   смотреть события в топике (ключ, партиция, тело); Ctrl+C — выход
+#   lab-stand topics   показать топики и их партиции
+#   lab-stand down     остановить стенд
+#
+# Вариант и топик берутся из /opt/lab-env/lab-variant, который пишет install.sh.
+
+set -euo pipefail
+
+ENV_DIR=/opt/lab-env
+VARIANT_FILE="$ENV_DIR/lab-variant"
+KAFKA_BIN=/opt/kafka/bin
+
+die() { echo "lab-stand: $*" >&2; exit 1; }
+
+[[ -f "$VARIANT_FILE" ]] || die "нет $VARIANT_FILE — сначала выполните install.sh из архива lab-kafka"
+# shellcheck disable=SC1090
+source "$VARIANT_FILE"          # задаёт LAB_VARIANT и LAB_TOPIC
+[[ -n "${LAB_TOPIC:-}" ]] || die "в $VARIANT_FILE не задан LAB_TOPIC"
+
+compose() { (cd "$ENV_DIR" && docker compose "$@"); }
+
+wait_broker() {
+    local deadline=$((SECONDS + 90))
+    printf 'Жду брокер'
+    until docker exec lab-kafka "$KAFKA_BIN/kafka-topics.sh" \
+            --bootstrap-server localhost:9092 --list >/dev/null 2>&1; do
+        (( SECONDS < deadline )) || { echo; die "брокер не поднялся за 90 секунд: docker logs lab-kafka"; }
+        printf '.'
+        sleep 2
+    done
+    echo ' готов'
+}
+
+case "${1:-}" in
+    up)
+        compose up -d
+        wait_broker
+        docker exec lab-kafka "$KAFKA_BIN/kafka-topics.sh" \
+            --bootstrap-server localhost:9092 --create --if-not-exists \
+            --topic "$LAB_TOPIC" --partitions 3 --replication-factor 1
+        echo "Стенд поднят, топик $LAB_TOPIC на месте. Проверка: lab-stand check"
+        ;;
+    check)
+        exec lab_kafka_probe "$LAB_TOPIC"
+        ;;
+    events)
+        exec docker exec -it lab-kafka "$KAFKA_BIN/kafka-console-consumer.sh" \
+            --bootstrap-server localhost:9092 --topic "$LAB_TOPIC" --from-beginning \
+            --property print.key=true --property print.partition=true
+        ;;
+    topics)
+        exec docker exec lab-kafka "$KAFKA_BIN/kafka-topics.sh" \
+            --bootstrap-server localhost:9092 --describe
+        ;;
+    down)
+        compose down
+        ;;
+    *)
+        sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+        exit 2
+        ;;
+esac

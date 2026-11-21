@@ -1,0 +1,50 @@
+@startuml layers
+' Этап 10: слои KVS и направление зависимостей.
+skinparam componentStyle rectangle
+
+package "app" {
+  [kvs_cli]
+  [kvs_tail]
+}
+package "kvs_infrastructure" {
+  [engines] 
+  [AppendOnlyLog / FileHistory] as log
+  [event_wire]
+  [KafkaEventPublisher] as kafka
+  [make_server] as compose
+}
+package "kvs_application" {
+  [Server]
+  [Registry / commands] as commands
+  [ILogSink / ILogSource] as journal
+  [SeenEvents / GenerationTracker] as seen
+}
+package "kvs_domain" {
+  [BasicStore] as store
+  [IStorageEngine] as engine
+  [IEventPublisher] as publisher
+  [DomainEvent] as events
+  [IClock] as clock
+}
+[lab::kafka] as lab
+
+kvs_cli --> compose
+kvs_tail --> event_wire
+kvs_tail --> seen
+kvs_tail --> lab
+compose --> Server
+compose --> engines
+compose --> kafka
+engines ..|> engine
+log ..|> journal
+kafka ..|> publisher
+kafka --> event_wire
+kafka --> lab
+Server --> store
+Server --> publisher
+Server --> journal
+commands --> store
+store --> engine
+store --> events
+store --> clock
+@enduml

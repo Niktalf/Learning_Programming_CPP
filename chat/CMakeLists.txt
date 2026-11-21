@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.28)
 project(chat LANGUAGES CXX)
 
+# Этап 10: слои — chat_domain, chat_application, chat_infrastructure — и
+# публикация доменных событий в Kafka (docs/layers.md, docs/events.md).
+#
 # С этапа 5 — C++23. На лекции 5 разбирались концепции, ranges, оператор <=>
 # и корутины; вместе с двадцать третьим стандартом приходят std::expected
 # (он заменяет собственный Result этапа 3), std::print, std::generator,
@@ -30,25 +33,79 @@ FetchContent_Declare(googletest
     GIT_TAG        v1.15.2)
 FetchContent_MakeAvailable(googletest)
 
-add_library(chat_core
-    src/message.cpp
-    src/lexer.cpp
-    src/convert.cpp
-    src/commands.cpp
-    src/errors.cpp
-    src/server.cpp
-    src/log.cpp
-    src/validate.cpp
-    src/message_id.cpp
-    src/owning_buffer.cpp
-    src/engines.cpp
-    src/reply.cpp
-    src/compose.cpp)
-target_include_directories(chat_core PUBLIC include)
-target_link_libraries(chat_core PRIVATE chat_warnings)
+# --- Этап 10: слои ----------------------------------------------------------
+#
+# Три библиотеки, зависимости только внутрь (docs/layers.md):
+#
+#   chat_infrastructure ──► chat_application ──► chat_domain
+#        │
+#        └── PRIVATE lab::kafka
+#
+# У каждого слоя свой каталог заголовков, и цель видит только свой и те, что
+# под ним: домену заголовки сервера и движков просто не найти. Пути
+# включения при этом прежние — "chat/chat_store.hpp", "chat/server.hpp", —
+# каталог слоя добавляется к поиску, а не к имени.
+#
+# Домен не линкуется ни с чем, кроме стандартной библиотеки; что он
+# действительно собирается и работает один, проверяет chat_domain_isolated.
+add_library(chat_domain
+    domain/src/message.cpp
+    domain/src/message_id.cpp
+    domain/src/errors.cpp
+    domain/src/validate.cpp
+    domain/src/owning_buffer.cpp)
+target_include_directories(chat_domain PUBLIC domain/include)
+target_link_libraries(chat_domain PRIVATE chat_warnings)
 
-add_executable(chat_cli src/main.cpp)
-target_link_libraries(chat_cli PRIVATE chat_core chat_warnings)
+# Прикладной слой: команды, их разбор, сервер с границей ошибок, порт
+# журнала. Знает домен, не знает ни файлов, ни брокера.
+add_library(chat_application
+    application/src/lexer.cpp
+    application/src/convert.cpp
+    application/src/commands.cpp
+    application/src/server.cpp
+    application/src/reply.cpp)
+target_include_directories(chat_application PUBLIC application/include)
+target_link_libraries(chat_application PUBLIC chat_domain PRIVATE chat_warnings)
+
+# Инфраструктура: движки, файловый журнал, формат событий, адаптер Kafka и
+# точка сборки. Обёртка брокера — PRIVATE: её заголовок не виден ни одной
+# цели, которая линкуется с инфраструктурой.
+#
+# CHAT_KAFKA=OFF собирает проект без обёртки — например, на машине, где она
+# ещё не установлена. Сервер тогда работает без событий, --events отвергается.
+option(CHAT_KAFKA "Build the Kafka event publisher and chat_tail (needs lab_kafka)" ON)
+add_library(chat_infrastructure
+    infrastructure/src/log.cpp
+    infrastructure/src/engines.cpp
+    infrastructure/src/event_wire.cpp
+    infrastructure/src/compose.cpp)
+target_include_directories(chat_infrastructure PUBLIC infrastructure/include)
+target_link_libraries(chat_infrastructure PUBLIC chat_application PRIVATE chat_warnings)
+if(CHAT_KAFKA)
+    find_package(lab_kafka QUIET)
+    if(NOT lab_kafka_FOUND)
+        message(FATAL_ERROR "lab_kafka not found. Install it (lab-kafka/install.sh) "
+                            "or configure with -DCHAT_KAFKA=OFF to build without events.")
+    endif()
+    target_sources(chat_infrastructure PRIVATE infrastructure/src/kafka_publisher.cpp)
+    target_link_libraries(chat_infrastructure PRIVATE lab::kafka)
+    target_compile_definitions(chat_infrastructure PRIVATE CHAT_WITH_KAFKA)
+endif()
+
+# chat_core — все три слоя одним именем, для тестов и утилит прошлых этапов,
+# которым нужна вся система. Своих исходников у неё нет.
+add_library(chat_core INTERFACE)
+target_link_libraries(chat_core INTERFACE chat_infrastructure)
+
+# Приложения — внешний круг: консольный клиент и подписчик.
+add_executable(chat_cli app/main.cpp)
+target_link_libraries(chat_cli PRIVATE chat_infrastructure chat_warnings)
+
+if(CHAT_KAFKA)
+    add_executable(chat_tail app/tail.cpp)
+    target_link_libraries(chat_tail PRIVATE chat_infrastructure lab::kafka chat_warnings)
+endif()
 
 enable_testing()
 add_executable(chat_tests
@@ -81,7 +138,9 @@ add_executable(chat_tests
     tests/test_engines.cpp
     tests/test_time_index.cpp
     tests/test_rooms_page.cpp
-    tests/test_clock.cpp)
+    tests/test_clock.cpp
+    tests/test_events.cpp
+    tests/test_event_wire.cpp)
 target_include_directories(chat_tests PRIVATE tests tools)
 target_link_libraries(chat_tests PRIVATE chat_core chat_warnings GTest::gtest_main)
 
@@ -118,7 +177,7 @@ target_link_libraries(chat_alloc_tests PRIVATE chat_core chat_warnings GTest::gt
 foreach(bench chat_bench_history chat_bench_tables chat_bench_engines chat_bench_open chat_nick_histogram)
     string(REPLACE "chat_" "" source ${bench})
     add_executable(${bench} bench/${source}.cpp tools/alloc_counter.cpp)
-    target_include_directories(${bench} PRIVATE tools bench include)
+    target_include_directories(${bench} PRIVATE tools bench domain/include infrastructure/include)
     target_link_libraries(${bench} PRIVATE chat_warnings)
 endforeach()
 # Замер движков идёт через хранилище целиком, а ему нужны исключения из ядра.
@@ -134,11 +193,11 @@ target_link_libraries(chat_bench_engines PRIVATE chat_core)
 # программа не связывается: отладочный режим меняет устройство контейнеров,
 # и смешивать его с библиотекой, собранной без него, нельзя.
 add_executable(chat_invalidation_demo EXCLUDE_FROM_ALL tools/invalidation_demo.cpp)
-target_include_directories(chat_invalidation_demo PRIVATE include)
+target_include_directories(chat_invalidation_demo PRIVATE domain/include)
 target_link_libraries(chat_invalidation_demo PRIVATE chat_warnings)
 
 add_executable(chat_invalidation_debug tools/invalidation_demo.cpp)
-target_include_directories(chat_invalidation_debug PRIVATE include)
+target_include_directories(chat_invalidation_debug PRIVATE domain/include)
 target_compile_definitions(chat_invalidation_debug PRIVATE _GLIBCXX_DEBUG)
 target_link_libraries(chat_invalidation_debug PRIVATE chat_warnings)
 add_test(NAME chat_invalidation_detected
@@ -146,10 +205,44 @@ add_test(NAME chat_invalidation_detected
                  "-DEXPECT=singular iterator"
                  -P ${CMAKE_SOURCE_DIR}/cmake/expect_runtime_failure.cmake)
 
+# --- Этап 10: проверки слоёв ------------------------------------------------
+#
+# Домен собирается и работает один: программа линкуется только с
+# chat_domain и подставляет свои данные чата. Протечка зависимости наружу —
+# ошибка сборки или линковки этой цели.
+add_executable(chat_domain_isolated tests/isolation/domain_only.cpp)
+target_link_libraries(chat_domain_isolated PRIVATE chat_domain chat_warnings)
+add_test(NAME chat_domain_isolated COMMAND chat_domain_isolated)
+
+# Ни слова о брокере в ядре — даже в комментариях.
+add_test(NAME chat_core_knows_no_broker
+         COMMAND ${CMAKE_COMMAND} -DROOT=${CMAKE_SOURCE_DIR} "-DDIRS=domain;application" -DWORD=kafka
+                 -P ${CMAKE_SOURCE_DIR}/cmake/expect_no_mention.cmake)
+
+# Сквозной тест с брокером — на макете кластера из librdkafka внутри
+# процесса: настоящий протокол, но без Docker. Собирается, только если в
+# системе есть rdkafka_mock.h. Модульные тесты (chat_tests) брокера не
+# требуют вовсе и проходят при остановленном стенде.
+if(CHAT_KAFKA)
+    find_path(CHAT_RDKAFKA_MOCK_DIR librdkafka/rdkafka_mock.h HINTS ${RDKAFKA_INCLUDE_DIRS})
+    if(CHAT_RDKAFKA_MOCK_DIR)
+        add_executable(chat_kafka_tests tests/test_kafka.cpp)
+        target_include_directories(chat_kafka_tests PRIVATE tests ${CHAT_RDKAFKA_MOCK_DIR})
+        target_link_libraries(chat_kafka_tests PRIVATE chat_core lab::kafka PkgConfig::RDKAFKA chat_warnings
+                                                       GTest::gtest_main)
+    else()
+        message(STATUS "rdkafka_mock.h not found: chat_kafka_tests is not built")
+    endif()
+endif()
+
 include(GoogleTest)
 gtest_discover_tests(chat_tests)
 gtest_discover_tests(chat_alloc_tests)
 gtest_discover_tests(chat_integration_tests PROPERTIES LABELS integration)
+if(TARGET chat_kafka_tests)
+    gtest_discover_tests(chat_kafka_tests PROPERTIES LABELS "integration\\;kafka" TIMEOUT 120
+                         DISCOVERY_TIMEOUT 30)
+endif()
 
 # Этап 8: тот же набор тестов на каждом движке хранилища, без единой правки
 # в тестах. Движок по умолчанию берётся из переменной окружения CHAT_ENGINE

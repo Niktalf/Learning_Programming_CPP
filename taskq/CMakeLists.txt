@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.28)
 project(taskq LANGUAGES CXX)
 
+# Этап 10: слои — taskq_domain, taskq_application, taskq_infrastructure — и
+# публикация доменных событий в Kafka (docs/layers.md, docs/events.md).
+#
 # С этапа 5 — C++23. На лекции 5 разбирались концепции, ranges, оператор <=>
 # и корутины; вместе с двадцать третьим стандартом приходят std::expected
 # (он заменяет собственный Result этапа 3), std::print, std::generator и
@@ -30,26 +33,80 @@ FetchContent_Declare(googletest
     GIT_TAG        v1.15.2)
 FetchContent_MakeAvailable(googletest)
 
-add_library(taskq_core
-    src/payload.cpp
-    src/engines.cpp
-    src/compose.cpp
-    src/task.cpp
-    src/log.cpp
-    src/task_key.cpp
-    src/lexer.cpp
-    src/convert.cpp
-    src/commands.cpp
-    src/service.cpp
-    src/errors.cpp
-    src/handler.cpp
-    src/validate.cpp
-    src/owning_buffer.cpp)
-target_include_directories(taskq_core PUBLIC include)
-target_link_libraries(taskq_core PRIVATE taskq_warnings)
+# --- Этап 10: слои ----------------------------------------------------------
+#
+# Три библиотеки, зависимости только внутрь (docs/layers.md):
+#
+#   taskq_infrastructure ──► taskq_application ──► taskq_domain
+#        │
+#        └── PRIVATE lab::kafka
+#
+# У каждого слоя свой каталог заголовков, и цель видит только свой и те, что
+# под ним: домену заголовки сервера и движков просто не найти. Пути
+# включения при этом прежние — "taskq/task_store.hpp", "taskq/service.hpp", —
+# каталог слоя добавляется к поиску, а не к имени.
+#
+# Домен не линкуется ни с чем, кроме стандартной библиотеки; что он
+# действительно собирается и работает один, проверяет taskq_domain_isolated.
+add_library(taskq_domain
+    domain/src/payload.cpp
+    domain/src/task.cpp
+    domain/src/task_key.cpp
+    domain/src/errors.cpp
+    domain/src/validate.cpp
+    domain/src/owning_buffer.cpp)
+target_include_directories(taskq_domain PUBLIC domain/include)
+target_link_libraries(taskq_domain PRIVATE taskq_warnings)
 
-add_executable(taskq_cli src/main.cpp)
-target_link_libraries(taskq_cli PRIVATE taskq_core taskq_warnings)
+# Прикладной слой: сервис очереди с командами, их разбор, граница ошибок
+# handle, порт журнала. Знает домен, не знает ни файлов, ни брокера.
+add_library(taskq_application
+    application/src/lexer.cpp
+    application/src/convert.cpp
+    application/src/commands.cpp
+    application/src/service.cpp
+    application/src/handler.cpp)
+target_include_directories(taskq_application PUBLIC application/include)
+target_link_libraries(taskq_application PUBLIC taskq_domain PRIVATE taskq_warnings)
+
+# Инфраструктура: индексы задач, файловый журнал, формат событий, адаптер Kafka и
+# точка сборки. Обёртка брокера — PRIVATE: её заголовок не виден ни одной
+# цели, которая линкуется с инфраструктурой.
+#
+# TASKQ_KAFKA=OFF собирает проект без обёртки — например, на машине, где она
+# ещё не установлена. Сервис тогда работает без событий, --events отвергается.
+option(TASKQ_KAFKA "Build the Kafka event publisher and taskq_tail (needs lab_kafka)" ON)
+add_library(taskq_infrastructure
+    infrastructure/src/log.cpp
+    infrastructure/src/engines.cpp
+    infrastructure/src/event_wire.cpp
+    infrastructure/src/compose.cpp)
+target_include_directories(taskq_infrastructure PUBLIC infrastructure/include)
+target_link_libraries(taskq_infrastructure PUBLIC taskq_application PRIVATE taskq_warnings)
+if(TASKQ_KAFKA)
+    find_package(lab_kafka QUIET)
+    if(NOT lab_kafka_FOUND)
+        message(FATAL_ERROR "lab_kafka not found. Install it (lab-kafka/install.sh) "
+                            "or configure with -DTASKQ_KAFKA=OFF to build without events.")
+    endif()
+    target_sources(taskq_infrastructure PRIVATE infrastructure/src/kafka_publisher.cpp)
+    target_link_libraries(taskq_infrastructure PRIVATE lab::kafka)
+    target_compile_definitions(taskq_infrastructure PRIVATE TASKQ_WITH_KAFKA)
+endif()
+
+# taskq_core — все три слоя одним именем, для тестов и утилит прошлых этапов,
+# которым нужна вся система. Своих исходников у неё нет.
+add_library(taskq_core INTERFACE)
+target_link_libraries(taskq_core INTERFACE taskq_infrastructure)
+
+# Приложения — внешний круг: консольный клиент и подписчик.
+add_executable(taskq_cli app/main.cpp)
+target_link_libraries(taskq_cli PRIVATE taskq_infrastructure taskq_warnings)
+
+if(TASKQ_KAFKA)
+    add_executable(taskq_tail app/tail.cpp)
+    target_link_libraries(taskq_tail PRIVATE taskq_infrastructure lab::kafka taskq_warnings)
+endif()
 
 enable_testing()
 add_executable(taskq_tests
@@ -84,7 +141,9 @@ add_executable(taskq_tests
     tests/test_engines.cpp
     tests/test_deadlines.cpp
     tests/test_list_page.cpp
-    tests/test_retry.cpp)
+    tests/test_retry.cpp
+    tests/test_events.cpp
+    tests/test_event_wire.cpp)
 target_include_directories(taskq_tests PRIVATE tests tools)
 target_link_libraries(taskq_tests PRIVATE taskq_core taskq_warnings GTest::gtest_main)
 
@@ -121,7 +180,7 @@ target_link_libraries(taskq_alloc_tests PRIVATE taskq_core taskq_warnings GTest:
 foreach(bench taskq_bench_queue taskq_bench_index taskq_bench_engines taskq_bench_open taskq_id_histogram)
     string(REPLACE "taskq_" "" source ${bench})
     add_executable(${bench} bench/${source}.cpp tools/alloc_counter.cpp)
-    target_include_directories(${bench} PRIVATE tools bench include)
+    target_include_directories(${bench} PRIVATE tools bench domain/include infrastructure/include)
     target_link_libraries(${bench} PRIVATE taskq_warnings)
 endforeach()
 # Замер движков идёт через хранилище целиком, а ему нужны исключения из ядра.
@@ -136,11 +195,11 @@ target_link_libraries(taskq_bench_engines PRIVATE taskq_core)
 # итераторе. С taskq_core программа не связывается: отладочный режим меняет
 # устройство контейнеров, и смешивать его с библиотекой без него нельзя.
 add_executable(taskq_invalidation_demo EXCLUDE_FROM_ALL tools/invalidation_demo.cpp)
-target_include_directories(taskq_invalidation_demo PRIVATE include)
+target_include_directories(taskq_invalidation_demo PRIVATE domain/include)
 target_link_libraries(taskq_invalidation_demo PRIVATE taskq_warnings)
 
 add_executable(taskq_invalidation_debug tools/invalidation_demo.cpp)
-target_include_directories(taskq_invalidation_debug PRIVATE include)
+target_include_directories(taskq_invalidation_debug PRIVATE domain/include)
 target_compile_definitions(taskq_invalidation_debug PRIVATE _GLIBCXX_DEBUG)
 target_link_libraries(taskq_invalidation_debug PRIVATE taskq_warnings)
 add_test(NAME taskq_invalidation_detected
@@ -148,10 +207,44 @@ add_test(NAME taskq_invalidation_detected
                  "-DEXPECT=singular iterator"
                  -P ${CMAKE_SOURCE_DIR}/cmake/expect_runtime_failure.cmake)
 
+# --- Этап 10: проверки слоёв ------------------------------------------------
+#
+# Домен собирается и работает один: программа линкуется только с
+# taskq_domain и подставляет свой индекс задач. Протечка зависимости наружу —
+# ошибка сборки или линковки этой цели.
+add_executable(taskq_domain_isolated tests/isolation/domain_only.cpp)
+target_link_libraries(taskq_domain_isolated PRIVATE taskq_domain taskq_warnings)
+add_test(NAME taskq_domain_isolated COMMAND taskq_domain_isolated)
+
+# Ни слова о брокере в ядре — даже в комментариях.
+add_test(NAME taskq_core_knows_no_broker
+         COMMAND ${CMAKE_COMMAND} -DROOT=${CMAKE_SOURCE_DIR} "-DDIRS=domain;application" -DWORD=kafka
+                 -P ${CMAKE_SOURCE_DIR}/cmake/expect_no_mention.cmake)
+
+# Сквозной тест с брокером — на макете кластера из librdkafka внутри
+# процесса: настоящий протокол, но без Docker. Собирается, только если в
+# системе есть rdkafka_mock.h. Модульные тесты (taskq_tests) брокера не
+# требуют вовсе и проходят при остановленном стенде.
+if(TASKQ_KAFKA)
+    find_path(TASKQ_RDKAFKA_MOCK_DIR librdkafka/rdkafka_mock.h HINTS ${RDKAFKA_INCLUDE_DIRS})
+    if(TASKQ_RDKAFKA_MOCK_DIR)
+        add_executable(taskq_kafka_tests tests/test_kafka.cpp)
+        target_include_directories(taskq_kafka_tests PRIVATE tests ${TASKQ_RDKAFKA_MOCK_DIR})
+        target_link_libraries(taskq_kafka_tests PRIVATE taskq_core lab::kafka PkgConfig::RDKAFKA taskq_warnings
+                                                       GTest::gtest_main)
+    else()
+        message(STATUS "rdkafka_mock.h not found: taskq_kafka_tests is not built")
+    endif()
+endif()
+
 include(GoogleTest)
 gtest_discover_tests(taskq_tests)
 gtest_discover_tests(taskq_alloc_tests)
 gtest_discover_tests(taskq_integration_tests PROPERTIES LABELS integration)
+if(TARGET taskq_kafka_tests)
+    gtest_discover_tests(taskq_kafka_tests PROPERTIES LABELS "integration\\;kafka" TIMEOUT 120
+                         DISCOVERY_TIMEOUT 30)
+endif()
 
 # Этап 8: тот же набор тестов на каждом движке индекса по номеру, без единой
 # правки в тестах. Движок по умолчанию берётся из переменной окружения
